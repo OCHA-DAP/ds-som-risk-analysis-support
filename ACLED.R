@@ -50,6 +50,9 @@ df_acled_long <- acled.api(
   email.address = Sys.getenv("ACLED_USER_EMAIL"),
   end.date = Sys.Date()
 )
+df_acled_long %>%
+  View()
+
 
 df_acled_long %>%
   filter(event_date>=as_date("2018-01-01")) %>%
@@ -83,7 +86,8 @@ df_freq_sub_events_violent %>%
        title = "Event frequencies since 2018", subtitle = "ACLED: Somalia")+
   facet_wrap(~event_type,nrow=4,scales = "free_y")
 
-
+df_acled_violent %>%
+  View()
 
 
 
@@ -93,6 +97,74 @@ df_acled_violent <- df_acled_short %>%
                            "Riots",
                            "Violence against civilians")) %>%
   tibble()
+
+
+
+# ADM1 2022 vs 2022 --------------------------------------------------------
+
+
+# filter to just violent events
+df_acled_violent <- df_acled_long %>%
+  filter(event_type %in% c("Battles",
+                           "Riots",
+                           "Violence against civilians")) %>%
+  tibble()
+
+df_acled_violent %>%
+  filter(year %in% c(2022,2023)) %>%
+  group_by(year,admin1) %>%
+  summarise(
+    across(c("interaction","fatalities"),~sum(.x))
+  ) %>%
+  ggplot(
+    aes(x= reorder(admin1,fatalities), y= fatalities, fill= as_factor(year))
+  )+
+  geom_bar(stat="identity",position="dodge")+
+  coord_flip()+
+  labs(
+    title= "Somalia ACLED Data",
+    subtitle = "Fatalities per admin 1 2022 vs 2023"
+  )+
+
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank()
+  )
+df_acled_violent %>%
+  filter(year %in% c(2022,2023)) %>%
+  group_by(year,admin1) %>%
+  summarise(
+    across(c("interaction","fatalities"),~sum(.x))
+  ) %>%
+  select(-interaction) %>%
+  pivot_wider(names_from = year, values_from = fatalities) %>%
+
+  mutate(
+    diff= `2023`-`2022`,
+    diff_class= ifelse(diff<0,"neg","pos")
+  ) %>%
+  ggplot(
+    aes(x= admin1, y= diff, fill=diff_class)
+  )+
+  geom_bar(stat="identity")+
+  scale_y_continuous(breaks = seq(-600,700,50))+
+  coord_flip()+
+  scale_fill_manual(values = c(hdx_hex("sapphire-hdx"),hdx_hex("tomato-hdx")))+
+  labs(
+    title= "Somalia ACLED Data",
+    subtitle = "Increase/Decrease Fatalities 2022-2023"
+  )+
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+
+
+
+
 
 df_acled_long %>%
   filter(event_date>=as_date("2018-01-01")) %>%
