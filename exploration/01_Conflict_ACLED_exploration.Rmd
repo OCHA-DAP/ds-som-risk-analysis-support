@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-## Intro
+# Intro
 
 This data takes a look at ACLED conflict data for Somalia. The main focus is to compare 2022 to 2023. Additionally, we wan't to make visuals w/ respect to the [2023 HNO report](https://reliefweb.int/report/somalia/somalia-humanitarian-needs-overview-2023-february-2023) table (p. 55) which identifes priority areas and risk scores for both `Inter-Clan` and  `Non international armed conflict - Al Shabaab` violence.
 
@@ -29,6 +29,8 @@ library(janitor)
 library(ggfx)
 library(acled.api)
 library(gghdx)
+library(sf)
+library(patchwork)
 gghdx()
 
 gdf_adm1 <- search_datasets(query = "cod-ab-som") %>%
@@ -44,7 +46,8 @@ df_acled_long <- acled.api(
   start.date = "2010-01-01",
   access.key = Sys.getenv("ACLED_ACCESS_KEY"),
   email.address = Sys.getenv("ACLED_USER_EMAIL"),
-  end.date = Sys.Date()
+  end.date = Sys.Date(),
+  all.variables=T
 )
 
 # filter to just violent events
@@ -56,6 +59,195 @@ df_acled_violent <- df_acled_long %>%
   )) %>%
   tibble()
 ```
+
+```{r}
+df_acled_violent <- df_acled_violent %>% 
+  mutate(
+    date= as_date(event_date),
+    conflict_class = case_when(
+      str_detect(actor1, "Al Shabaab")~"Al Shabaab" ,
+      str_detect(actor2, "Al Shabaab")~"Al Shabaab" ,
+      str_detect(actor1, "Clan")~"Clan" ,
+      str_detect(actor2, "Clan")~"Clan" ,
+      str_detect(actor1, "Militia")~"Clan" ,
+      str_detect(actor2, "Militia")~"Clan" ,
+      .default = "other")
+  )
+
+
+```
+
+```{r eval=F}
+
+# just having a look - not using right now
+  df_acled_violent %>% 
+  filter(year(date)>=2016) %>% 
+  group_by(
+    date,
+    conflict_class
+  ) %>% 
+  summarise(
+    fatalities= sum(fatalities)
+  ) %>% 
+  ggplot(aes(x= date, y= fatalities, color= conflict_class,group=conflict_class))+
+  geom_point()+
+  geom_line()+
+  scale_x_date(
+    date_labels = "%Y",
+    date_breaks = "1 year"
+  )
+  
+```
+
+
+
+# Conflict Bar Charts
+
+## All Fatalities 2022 vs 2023
+
+```{r}
+df_acled_violence_gte2022 <- df_acled_violent %>%
+  filter(year %in% c(2022, 2023),
+         !(year == 2022 & event_date >= "2022-09-29")
+         )
+
+df_adm1_acled_gte2022 <- df_acled_violence_gte2022 %>%
+  group_by(year, admin1) %>%
+  summarise(
+    across(c("interaction", "fatalities"), ~ sum(.x))
+  ) 
+
+df_adm1_acled_gte2022 %>%
+  ggplot(
+    aes(x = reorder(admin1, fatalities), y = fatalities, fill = as_factor(year))
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Somalia ACLED Data",
+    subtitle = "Fatalities per admin 1 - 2022 vs 2023"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank()
+  )
+```
+
+## Fatalities by Conflict Type - 2023 vs 2023
+```{r}
+df_adm1_conflict_gte2022 <- df_acled_violence_gte2022 %>%
+  filter(
+    conflict_class!="other",
+  ) %>%
+  mutate(
+    conflict_class_label = if_else(conflict_class == "Al Shabaab", "Al Shabaab Related", "Clan Related")
+  ) %>% 
+  group_by(year, admin1,conflict_class_label) %>%
+  summarise(
+    across(c("interaction", "fatalities"), ~ sum(.x)),
+    .groups="drop"
+  )
+
+df_adm1_conflict_gte2022 %>%
+  ggplot(
+    aes(x = reorder(admin1, fatalities), y = fatalities, fill = as_factor(year))
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  facet_wrap(~conflict_class_label)+
+  labs(
+    title = "Somalia ACLED Data - By Confict Type",
+    subtitle = "Fatalities per admin 1 2022 vs 2023",
+    caption = "Classification of conflict type:\n1. If Al-Shabaab was listed as actor 1 or 2 it was event is considered 'Al Shabaab Related'\n2. If Al-Shabaab was not listed and either 'Clan' or 'Militia' was listed as actor 1 or 2 the event was classified as 'Clan Related'\n3. All other events types not considered"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    plot.caption = element_text(hjust=0)
+  )
+```
+
+## Increase/Decrease from 2022 to 2023
+
+All ACLED conflict fatalities
+```{r}
+#  cut-off 2022 data at the same month-day as 2023 data ends
+df_adm1_acled_compare <- df_adm1_acled_gte2022 %>% 
+  select(-interaction) %>%
+  pivot_wider(names_from = year, values_from = fatalities) %>%
+  mutate(
+    diff = `2023` - `2022`,
+    diff_class = ifelse(diff < 0, "neg", "pos")
+  )
+
+df_adm1_conflict_acled_compare <- df_adm1_conflict_gte2022 %>% 
+  select(-interaction) %>%
+  pivot_wider(names_from = year, values_from = fatalities,values_fill = 0) %>%
+  mutate(
+    diff = `2023` - `2022`,
+    diff_class = ifelse(diff < 0, "neg", "pos")
+  )
+
+df_adm1_acled_compare %>%
+  ggplot(
+    aes(x = admin1, y = diff, fill = diff_class)
+  ) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = seq(-600, 700, 50)) +
+  coord_flip() +
+  scale_fill_manual(values = c(hdx_hex("sapphire-hdx"), hdx_hex("tomato-hdx"))) +
+  labs(
+    title = "Somalia ACLED Data",
+    subtitle = "Increase/Decrease Fatalities 2022-2023",
+    caption = "2022 data filtered to same time-span (Jan 1- Sep 29) as 2023 ACLED data to improve comparability"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90),
+    axis.title.x = element_blank(),
+    plot.caption = element_text(hjust= 0)
+  )
+```
+
+
+ACLED conflict fatalities by type (Shabaab vs Interclan)
+```{r}
+df_adm1_conflict_acled_compare %>%
+  ggplot(
+    aes(x = admin1, y = diff, fill = diff_class)
+  ) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = seq(-600, 700, 50)) +
+  coord_flip() +
+  scale_fill_manual(values = c(hdx_hex("sapphire-hdx"), hdx_hex("tomato-hdx"))) +
+  labs(
+    title = "Somalia ACLED Data",
+    subtitle = "Increase/Decrease Fatalities 2022-2023",
+    caption = "Note: scales of x-axis differ in 2 plots"
+  ) +
+  geom_text( aes(
+    label=diff,
+    y=ifelse(diff<=100, diff+ 50* sign(diff),diff + (.05*diff))
+    # y=max(diff)+.05*max(diff)
+                 ),
+    angle=270)+
+  facet_wrap(~conflict_class_label,scales = "free_x")+
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90),
+    axis.title.x = element_blank(),
+    plot.caption = element_text(hjust=0),
+    panel.border = element_rect(color="grey",fill=NA)
+  )
+  
+```
+
+# Maps
+
 
 
 From 2023 HNO we have the following classifications
@@ -100,76 +292,6 @@ conflict_priority_zones %>%
   gt()
 ```
 
-
-## 2022 vs 2023 violence
-
-### Absolute Numbers (bar chart)
-
-```{r}
-df_acled_violent %>%
-  filter(year %in% c(2022, 2023)) %>%
-  group_by(year, admin1) %>%
-  summarise(
-    across(c("interaction", "fatalities"), ~ sum(.x))
-  ) %>%
-  ggplot(
-    aes(x = reorder(admin1, fatalities), y = fatalities, fill = as_factor(year))
-  ) +
-  geom_bar(stat = "identity", position = "dodge") +
-  coord_flip() +
-  labs(
-    title = "Somalia ACLED Data",
-    subtitle = "Fatalities per admin 1 2022 vs 2023"
-  ) +
-  theme(
-    legend.title = element_blank(),
-    axis.title.y = element_blank()
-  )
-```
-
-### Differnce in years (bar chart)
-
-```{r}
-#  cut-off 2022 data at the same month-day as 2023 data ends
-df_fatalities_year_recent_norm <- df_acled_violent %>%
-  filter(year %in% c(2022, 2023)) %>%
-  filter(
-    !(year == 2022 & event_date >= "2022-09-29")
-  ) %>%
-  group_by(year, admin1) %>%
-  summarise(
-    across(c("interaction", "fatalities"), ~ sum(.x))
-  ) %>%
-  select(-interaction) %>%
-  pivot_wider(names_from = year, values_from = fatalities) %>%
-  mutate(
-    diff = `2023` - `2022`,
-    diff_class = ifelse(diff < 0, "neg", "pos")
-  )
-
-
-
-df_fatalities_year_recent_norm %>%
-  ggplot(
-    aes(x = admin1, y = diff, fill = diff_class)
-  ) +
-  geom_bar(stat = "identity") +
-  scale_y_continuous(breaks = seq(-600, 700, 50)) +
-  coord_flip() +
-  scale_fill_manual(values = c(hdx_hex("sapphire-hdx"), hdx_hex("tomato-hdx"))) +
-  labs(
-    title = "Somalia ACLED Data",
-    subtitle = "Increase/Decrease Fatalities 2022-2023 (up to sep 29 each year)"
-  ) +
-  theme(
-    legend.title = element_blank(),
-    axis.title.y = element_blank(),
-    legend.position = "none",
-    axis.text.x = element_text(angle = 90),
-    axis.title.x = element_blank()
-  )
-```
-
 ## HNO 2023 - Groupings for Geographical Scope on Violence Scores
 
 ```{r}
@@ -212,7 +334,7 @@ gdf_adm1_class <- gdf_adm1 %>%
   )
 ```
 
-## Non-International Armed Forces (Al-Shabab) Grouping
+## Grouping: Non-International Armed Forces (Al-Shabab) Grouping
 
 ```{r}      
 gdf_adm1_class %>%
@@ -233,7 +355,7 @@ gdf_adm1_class %>%
 ```
 
 
-## Interclan violence grouping
+## Grouping: Interclan violence 
 ```{r}
 gdf_adm1_class %>%
   ggplot() +
@@ -251,25 +373,32 @@ gdf_adm1_class %>%
   )
 ```
 
-## Map - Increase/Decrease 2022-2023 in Violence
+## ACLED data not classified
+
+- Did this work before learning you could get actor information from the acled API by adding `all.variables=T`
+- will leave it here and add the conflict classifications as a section after.
 
 ### Map with Non-Intl Armed Conflict (Al Shabab) boundaries
-```{r}
-df_fatalities_year_recent_norm %>%
+
+```{r, results='hide'}
+# check that admins are harmonized
+df_adm1_acled_compare %>%
   filter(!admin1 %in% gdf_adm1_class$adm1_en)
 
 
+# join ACLED data to COD that's classified according to 2023 HNO groups
 gdf_adm1_acled <- gdf_adm1_class %>%
-  left_join(df_fatalities_year_recent_norm, by = c("adm1_en" = "admin1"))
+  left_join(df_adm1_acled_compare, by = c("adm1_en" = "admin1"))
 
-gdf_intl_groups_dissolved <- gdf_adm1_acled %>%
+gdf_intl_groups_dissolved <- gdf_adm1_class %>%
   filter(!is.na(hno_intl_conflict)) %>%
   group_by(
     hno_intl_conflict
   ) %>%
   summarise()
+```
 
-
+```{r}
 ggplot() +
   geom_sf(
     data = gdf_adm1_acled,
@@ -306,18 +435,19 @@ ggplot() +
     colour = "white", sigma = 2
   ) +
   labs(
-    title = "Somalia - Change in Non-Intl Armed Conflict Related Fatalities 2022-2023",
-    subtitle = "Regions highlighted in black are groupings used in 2023 HNO"
+    title = "Somalia - Increase/Decrease in conflict-related fatalities 2022-2023",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define Al-Shabaab related zones",
+    caption = "All conflict related fatalities considered"
+  )+
+  theme(
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0)
   )
 ```
 
 ### Map with Interclan Boundaries
 
 ```{r}
-df_fatalities_year_recent_norm %>%
-  filter(!admin1 %in% gdf_adm1_class$adm1_en)
-
-
 
 gdf_interclan_groups_dissolved <- gdf_adm1_acled %>%
   filter(!is.na(hno_interclan_conflict)) %>%
@@ -364,9 +494,356 @@ ggplot() +
   labs(
     title = "Somalia - Change in Interclan Related Fatalities 2022-2023",
     subtitle = "Regions highlighted in black are groupings used in 2023 HNO"
+  )+
+  theme(
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0)
   )
 ```
 
+## ACLED DATA Classified
+
+### Map with Non-Intl Armed Conflict (Al Shabab) boundaries
+
+```{r}
+
+gdf_adm1_acled_shabaab <- gdf_adm1_class %>%
+  left_join(df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Al Shabaab Related"
+              ), by = c("adm1_en" = "admin1"))
+
+
+gdf_intl_groups_dissolved <- gdf_adm1_class %>%
+  filter(!is.na(hno_intl_conflict)) %>%
+  group_by(
+    hno_intl_conflict
+  ) %>%
+  summarise()
+
+ggplot() +
+  geom_sf(
+    data = gdf_adm1_acled_shabaab,
+    aes(fill = diff),
+    alpha = 1
+  ) +
+  with_shadow(
+    geom_sf(
+      data = gdf_intl_groups_dissolved,
+      # aes(fill= diff),
+      fill = NA,
+      alpha = 1,
+      color = "black",
+      lwd = 1
+    ),
+    sigma = 3, x_offset = 0.5,
+    y_offset = 0.25
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_intl_groups_dissolved,
+      aes(label = str_wrap(hno_intl_conflict, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Increase/Decrease in conflict-related fatalities 2022-2023",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define Al-Shabaab related zones",
+    caption = "Only fatalities in which Al-Shabaab was involved"
+  )+
+  theme(
+    plot.title = element_text(size=14),
+    plot.subtitle = element_text(size=12),
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0)
+  )
+```
+
+### Trends Al-Shabaab in HNO Groupings
+
+```{r, results='hide'}
+latest_date_yday <- yday(
+  as_date("2022-09-29")
+)
+
+# filter all years so they do not go past Sep 29.
+df_acled_violent_norm <- df_acled_violent %>%
+  filter(
+        yday(event_date)<=latest_date_yday
+        ) 
+  
+# good
+df_acled_violent_norm %>% 
+  filter(!admin1 %in% gdf_adm1_class$adm1_en) %>% 
+  distinct(admin1)
+
+# add HNO groupings
+df_acled_violent_norm_hno <- df_acled_violent_norm %>% 
+  left_join(
+    gdf_adm1_class %>% 
+      st_drop_geometry() %>% 
+      select(-starts_with("adm0")), 
+    by = c("admin1"="adm1_en")
+  )
+
+
+df_adm1_acled_conflict <- df_acled_violent_norm_hno %>%
+  mutate(
+    hno_intl_conflict = ifelse(is.na(hno_intl_conflict),"Not grouped as Al-Shabaab related",hno_intl_conflict),
+    hno_interclan_conflict = ifelse(is.na(hno_interclan_conflict),"Not grouped as Clan related",hno_interclan_conflict)
+  ) %>% 
+  group_by(year = floor_date(
+    as_date(event_date),"year"), hno_intl_conflict,admin1,conflict_class) %>%
+  summarise(
+    across(c("interaction", "fatalities"), ~ sum(.x)),
+    .groups="drop"
+  ) 
+
+
+hno_shabaab_regions <- df_adm1_acled_conflict$hno_intl_conflict %>% unique()
+
+p_shabaab_trends <- 
+  map(set_names(hno_shabaab_regions),
+      \(region_name){
+    df_adm1_acled_conflict %>% 
+      filter(conflict_class=="Al Shabaab",
+             hno_intl_conflict==region_name) %>% 
+      ggplot(
+        aes(x= year, y=fatalities, color= admin1, group=admin1)
+      )+
+      geom_point()+
+      geom_line()+
+      scale_x_date(date_breaks ="2 year",
+                   date_labels = "%Y")+
+      labs(
+        title = region_name
+      )+
+      theme(
+        legend.title = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(size=10),
+        axis.text.x = element_text(angle=90),
+        legend.text = element_text(size=8),legend.key = element_rect(size=3),
+        panel.border = element_rect(color="grey", fill = NA)
+      )
+  }
+  )
+```
+
+```{r}
+p_shabaab_trends$Jubaland+
+  p_shabaab_trends$`South West State`+
+  p_shabaab_trends$Hirshabelle+
+  p_shabaab_trends$Galmadug+
+  p_shabaab_trends$Puntland+
+  p_shabaab_trends$`Not grouped as Al-Shabaab related`+
+  plot_annotation(
+    title = "Somalia: Yeary Al-Shabaab Related Conflict Fatalities",
+    subtitle = "Split by 2023 HNO Groupings"
+    )+
+  plot_layout(ncol=3)
+
+
+```
+
+
+### Map with Interclan Boundaries
+
+```{r}
+
+gdf_adm1_acled_clan <- gdf_adm1_class %>%
+  left_join(df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Clan Related"
+              ), by = c("adm1_en" = "admin1"))  
+
+
+
+gdf_interclan_groups_dissolved <- gdf_adm1_acled %>%
+  filter(!is.na(hno_interclan_conflict)) %>%
+  group_by(
+    hno_interclan_conflict
+  ) %>%
+  summarise()
+
+ggplot() +
+  geom_sf(
+    data = gdf_adm1_acled_clan,
+    aes(fill = diff),
+    alpha = 1
+  ) +
+  with_shadow(
+    geom_sf(
+      data = gdf_interclan_groups_dissolved,
+      # aes(fill= diff),
+      fill = NA,
+      alpha = 1,
+      color = "black",
+      lwd = 1
+    ),
+    sigma = 3, x_offset = 0.5,
+    y_offset = 0.25
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_interclan_groups_dissolved,
+      aes(label = str_wrap(hno_interclan_conflict, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Increase/Decrease in Interclan-Confict Related Fatalities between 2022 & 2023",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define zones with higher levels of Interclan violence",
+    caption = "Only conflict events in which at least one actor was described as Clan or Militia and no actors were Al-Shabaab\nGrey indicates no Interclan events reported in 2022 or 2023"
+  )+
+  theme(
+    plot.title = element_text(size=13),
+    plot.subtitle = element_text(size=10),
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0, size=10)
+  )
+```
+
+### Inter clan trends
+```{r}
+
+df_adm1_acled_conflict_interclan <- df_acled_violent_norm_hno %>%
+  mutate(
+    hno_intl_conflict = ifelse(is.na(hno_intl_conflict),"Not grouped as Al-Shabaab related",hno_intl_conflict),
+    hno_interclan_conflict = ifelse(is.na(hno_interclan_conflict),"Not grouped as Clan related",hno_interclan_conflict)
+  ) %>% 
+  group_by(year = floor_date(
+    as_date(event_date),"year"), hno_interclan_conflict,admin1,conflict_class) %>%
+  summarise(
+    across(c("interaction", "fatalities"), ~ sum(.x)),
+    .groups="drop"
+  ) 
+```
+
+
+```{r eval=F}
+
+# Followed same process as I did for Shabaab related plots
+# but since there are lest admins in the Interclan grouping I can actually just do a simple 
+# ~facet_wrape.... Therefore the set this chunk `eval=F` ... but keeping code for now.
+
+hno_interclan_regions <- df_adm1_acled_conflict_interclan$hno_interclan_conflict %>% unique()
+
+p_interclan_trends <- 
+  map(set_names(hno_interclan_regions),
+      \(region_name){
+    df_adm1_acled_conflict_interclan %>% 
+      filter(conflict_class=="Clan",
+             hno_interclan_conflict==region_name) %>% 
+      ggplot(
+        aes(x= year, y=fatalities, color= admin1, group=admin1)
+      )+
+      geom_point()+
+      geom_line()+
+      scale_x_date(date_breaks ="2 year",
+                   date_labels = "%Y")+
+      labs(
+        title = region_name
+      )+
+      theme(
+        legend.title = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(size=10),
+        axis.text.x = element_text(angle=90),
+        legend.text = element_text(size=8),legend.key = element_rect(size=3),
+        panel.border = element_rect(color="grey", fill = NA)
+      )
+  }
+  )
+
+
+p_interclan_trends$`Lower Shabelle`+
+p_interclan_trends$`Middle Shabelle`+
+p_interclan_trends$Hiraan+
+p_interclan_trends$Galmadug+
+p_interclan_trends$`Sool Regions`+
+# p_interclan_trends$`Not grouped as Clan related`+
+  plot_annotation(
+    title = "Somalia: Yeary Interclan Related Conflict Fatalities",
+    subtitle = "Split by 2023 HNO Groupings"
+    )+
+  plot_layout(ncol=3)
+```
+
+
+```{r}
+# Simple facet_wrap will work w/ less admin lines to color
+df_adm1_acled_conflict_interclan %>% 
+  filter(conflict_class=="Clan",
+         hno_interclan_conflict!="Not grouped as Clan related") %>% 
+  ggplot(
+    aes(x= year, y=fatalities, color= admin1, group=admin1)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks ="2 year",
+               date_labels = "%Y")+
+  scale_y_continuous(
+    breaks= seq(0,350, 50),
+    limits= c(0, 325),
+    expand = c(0,0)
+  )+
+  facet_wrap(~hno_interclan_conflict)+
+  labs(
+    title = "Somalia: Yeary Interclan Related Conflict Fatalities",
+    subtitle = "Split by 2023 HNO Groupings"
+  )+
+  theme(
+    legend.title = element_blank(),
+    axis.title = element_blank(),
+    
+    axis.text.x = element_text(angle=90),
+    # legend.text = element_text(size=8),legend.key = element_rect(size=3),
+    panel.border = element_rect(color="grey", fill = NA)
+  )
+```
+
+
+```{r}
+
+df_adm1_acled_conflict_interclan %>% 
+  filter(conflict_class=="Clan",
+         hno_interclan_conflict=="Not grouped as Clan related") %>% 
+  ggplot(
+    aes(x= year, y=fatalities, color= admin1, group=admin1)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks ="2 year",
+               date_labels = "%Y")+
+  scale_y_continuous(
+    breaks= seq(0,150, 25),
+    limits= c(0, 125),
+    expand = c(0,0)
+  )+
+  # facet_wrap(~hno_interclan_conflict)+
+  labs(
+    title = "Somalia: Yeary Interclan Related Conflict Fatalities",
+    subtitle = "Small flare ups in clan-related violence in regions not classified as interclan violence zones (HNO 2023)"
+  )+
+  scale_color_brewer(type = "qual",palette = "Set3")+
+  theme(
+    legend.title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle=90),
+    panel.border = element_rect(color="grey", fill = NA)
+  )
+
+
+```
 
 ## Appendix
 
@@ -490,10 +967,6 @@ df_yr_mo_summary_adm1 <- df_acled_violent  %>%
 
 
 p_acled_summary <- df_acled_violent %>%
-  rename(
-    date= "event_date"
-  ) %>%
-  # filter(admin1=="Galgaduud") %>%
   ggplot(
     aes(x=as_date(date), y= fatalities)
   )+
@@ -533,11 +1006,7 @@ p_acled_summary
 # ggiraph(ggobj = p_acled_summary)
 
 
-df_acled_violent %>%
-  rename(
-    date= "event_date"
-  ) %>%
-  filter(admin1=="Galgaduud")
+
 
 
 ```
