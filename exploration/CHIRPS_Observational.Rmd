@@ -337,3 +337,255 @@ df_chirps_anomaly %>%
   )
 ```
 
+# MAM anomaly - National Level
+```{r}
+df_mam_baseline <- df_chirps %>% 
+  filter(
+    year(date) %in% historical_baseline_ref,
+    month(date) %in% c(3,4,5)
+  )
+mam_mean<- df_mam_baseline %>% 
+  group_by(date=floor_date(date,"year")) %>% 
+  summarise(
+    mam_sum = sum(value)
+  ) %>% 
+  summarise(
+    mam_mean = mean(mam_sum)
+  )
+
+
+ df_mam_anomaly <- df_chirps %>% 
+  filter(
+    month(date) %in% c(3,4,5)
+  ) %>% 
+   group_by(date=floor_date(date,"year")) %>% 
+  summarise(
+    mam_sum = sum(value)
+  ) %>%
+   mutate(
+     mam_diff = mam_sum - mam_mean$mam_mean
+   ) 
+ 
+ df_mam_anomaly %>% 
+   ggplot(
+    
+   )+
+   geom_point(
+      aes(x= date, y= mam_diff)
+   )+
+   geom_line(
+      aes(x= date,
+          y= mam_diff)
+   )+
+     geom_rect(
+    data= df_el_nino_years,
+    aes(
+      xmin = start_date,
+      xmax = end_date,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.2,
+    fill = hdx_hex("tomato-hdx")
+  )+
+   scale_x_date(
+     date_break= "1 year",
+     date_labels = "%Y"
+   )+
+   geom_hline(yintercept = 0,linetype="dashed",color=hdx_hex("tomato-hdx"))+
+   labs(
+     title = "Somalia MAM Yearly Rainfall Anomaly",
+     subtitle ="Baseline MAM (1981-2010)",
+     y= "Absolute difference from historical average (mm)"
+   )+
+   theme(
+     axis.title.x = element_blank(),
+     axis.text.x = element_text(angle = 90)
+   )
+```
+# OND anomaly - National Level
+```{r}
+df_ond_baseline <- df_chirps %>% 
+  filter(
+    year(date) %in% historical_baseline_ref,
+    month(date) %in% c(10,11,12)
+  )
+ond_mean<- df_ond_baseline %>% 
+  group_by(date=floor_date(date,"year")) %>% 
+  summarise(
+    ond_sum = sum(value)
+  ) %>% 
+  summarise(
+    ond_mean = mean(ond_sum)
+  )
+
+
+ df_ond_anomaly <- df_chirps %>% 
+  filter(
+    month(date) %in% c(10,11,12)
+  ) %>% 
+   group_by(date=floor_date(date,"year")) %>% 
+  summarise(
+    ond_sum = sum(value)
+  ) %>%
+   mutate(
+     ond_diff = ond_sum - ond_mean$ond_mean
+   ) 
+ 
+ df_ond_anomaly %>% 
+   ggplot(
+    
+   )+
+   geom_point(
+      aes(x= date, y= ond_diff)
+   )+
+   geom_line(
+      aes(x= date,
+          y= ond_diff)
+   )+
+     geom_rect(
+    data= df_el_nino_years,
+    aes(
+      xmin = start_date,
+      xmax = end_date,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.2,
+    fill = hdx_hex("tomato-hdx")
+  )+
+   scale_x_date(
+     date_break= "1 year",
+     date_labels = "%Y"
+   )+
+   geom_hline(yintercept = 0,linetype="dashed",color=hdx_hex("tomato-hdx"))+
+   labs(
+     title = "Somalia OND Yearly Rainfall Anomaly",
+     subtitle ="Baseline OND (1981-2010)",
+     y= "Absolute difference from historical average (mm)"
+   )+
+   theme(
+     axis.title.x = element_blank(),
+     axis.text.x = element_text(angle = 90)
+   )
+```
+
+## MAM Admin 1 Level
+
+```{r}
+chirps_zonal_dir <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "processed",
+  "som",
+  "chirps"
+)
+df_mam_ond<- read_csv(
+  file.path(
+    chirps_zonal_dir,
+    "20231005_chirps_adm1_MAM_OND.csv" 
+  )
+)
+df_mam_ond_baseline <- df_mam_ond %>% 
+  filter(year(date) %in% historical_baseline_ref)
+
+df_adm1_mam_ond_baseline_mean <- df_mam_ond_baseline %>% 
+  group_by(adm1_en,
+           adm1_pcode,
+           mo= month(date)
+           ) %>% 
+  summarise(
+    avg_historical = mean(value),
+    .groups="drop"
+  )
+
+df_mam_ond_anomaly <- df_mam_ond %>%   
+  mutate(
+    mo = month(date),
+    yr= year(date)
+  ) %>% 
+  left_join(df_adm1_mam_ond_baseline_mean) %>% 
+  mutate(
+    anomaly_absolute = value - avg_historical
+  )
+df_mam_ond_anomaly %>% 
+  ggplot(
+    aes(x= date,y = anomaly_absolute, color=adm1_en)
+  ) +
+  geom_point()+
+  geom_line()+
+  facet_wrap(~mo,nrow=2)
+
+df_mam_ond_anomaly %>% 
+  filter(mo ==3) %>% 
+  ggplot(
+    
+  ) +
+  geom_point(
+    aes(x= date,y = anomaly_absolute)
+  )+
+  geom_line(
+    aes(x= date,y = anomaly_absolute)
+  )+
+  geom_hline(yintercept =0, 
+             linetype= "dashed", color=hdx_hex("tomato-hdx"))+
+    geom_rect(
+    data= df_el_nino_years,
+    aes(
+      xmin = start_date,
+      xmax = end_date,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.2,
+    fill = hdx_hex("tomato-hdx")
+  )+
+  scale_x_date(
+    date_breaks="2 year",
+    date_labels = "%y"
+  )+
+  facet_wrap(~adm1_en)+
+  labs(
+    title = "Somalia MAM anomaly admin 1"
+  )
+df_mam_ond_anomaly %>% 
+  filter(mo ==10) %>% 
+  ggplot(
+    
+  ) +
+  geom_point(
+    aes(x= date,y = anomaly_absolute)
+  )+
+  geom_line(
+    aes(x= date,y = anomaly_absolute)
+  )+
+  geom_hline(yintercept =0, 
+             linetype= "dashed", color=hdx_hex("tomato-hdx"))+
+    geom_rect(
+    data= df_el_nino_years,
+    aes(
+      xmin = start_date,
+      xmax = end_date,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.2,
+    fill = hdx_hex("tomato-hdx")
+    )+
+  scale_x_date(
+    date_breaks="2 year",
+    date_labels = "%y"
+  )+
+  facet_wrap(~adm1_en)+
+  labs(
+    title = "Somalia OND anomaly admin 1"
+  )+
+  theme(
+    axis.text.x = element_text(angle=90,size=9)
+  )
+
+
+
+```
+
+
