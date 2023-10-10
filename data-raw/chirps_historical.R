@@ -6,6 +6,7 @@ library(rhdx)
 library(janitor)
 ee_Initialize()
 
+admin_level <-  c("adm0","adm1","adm2")[3]
 
 som_adm0_levels <- c(
   "som_admbnda_adm0_ocha_20230308",
@@ -43,28 +44,28 @@ tic_monthly_rainfall <- tic %>%
     stat = "sum"
   )
 
+som_adm[[admin_level]]
 
-cat("get adm0 boundaries from FAO\n")
-# fc_adm0 = ee$FeatureCollection('FAO/GAUL/2015/level0')
+fc_adm <- sf_as_ee(x = som_adm[[admin_level]])
 
-fc_adm0 <- sf_as_ee(x = som_adm$adm0)
-
-cat("begin extraction of zonal stats\n")
-df_rainfall_adm0 <- ee_extract_tidy(
+cat("begin extraction of zonal stats for ", admin_level,"\n")
+df_rainfall_adm <- ee_extract_tidy(
   x = tic_monthly_rainfall,
-  y = fc_adm0,
+  y = fc_adm,
   scale = 5566,
   stat = "mean",
   via = "drive"
 )
 
-
+prefix_date <- format(Sys.Date() ,"%Y%m%d")
 cat("write zonal sats to csv\n")
 write_csv(
-  x = df_rainfall_adm0,
+  x = df_rainfall_adm,
   file = file.path(
     out_dir,
-    "20230926_chirps_monthly_historical_adm0.csv"
+    paste0(
+      prefix_date,"_chirps_monthly_historical_",admin_level,".csv"
+    )
   )
 )
 cat("finished")

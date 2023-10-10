@@ -1,0 +1,623 @@
+---
+title: "PRMN"
+output: html_document
+date: "2023-10-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(gghdx)
+
+dir_som_pub_raw <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "raw",
+  "som")
+
+dir_som_pub_processed <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public","processed",
+  "som")
+
+fp_chirps_adm2 <-  file.path(
+  dir_som_pub_processed,
+  "chirps",
+  "20231010_chirps_monthly_historical_adm2.csv")    
+
+fp_prmn <- file.path(dir_som_pub_raw,
+          "prmn",
+          "UNHCR-PRMN-Displacement-Dataset.xlsx"
+          )
+df_prmn <- read_xlsx(fp_prmn) %>% 
+  clean_names()
+
+df_chirps <- read_csv(fp_chirps_adm2)
+  
+
+df_oni <- read.table("https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt",
+                     sep = "",header=T) %>% 
+  clean_names() %>% 
+  tibble()
+
+```
+
+
+
+```{r}
+df_prmn %>% 
+  count(reason)
+df_flood <-  df_prmn %>% 
+  filter(reason=="Flood") %>% 
+  mutate(
+    date= dmy(month_end),
+    yr_mo = floor_date(date, "month"),
+    ,.before= everything()
+  )
+
+df_flood %>% 
+  count(previous_departure_district)
+
+df_flood %>% 
+  count(previous_departure_region)
+  
+```
+
+```{r}
+df_flood %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())
+```
+
+# Top 10 districts vs Rainfall
+
+As a first step let's look at top 10 districts by displacement. If there is no connection to rainfall then I don't think worth exploring more
+```{r}
+
+top_20_districts <- df_flood %>% 
+  group_by(across(matches("departure_"))) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals),
+    .groups="drop"
+  ) %>% 
+  slice_max(n=20, order_by = number_of_individuals) %>% 
+  print(n=nrow(.))
+
+top_20_districts %>% 
+  filter(!previous_departure_district%in% df_chirps$adm2_en)
+
+df_chirps %>% 
+  filter(!adm2_en%in% df_flood$previous_departure_district) %>% 
+  distinct(adm1_en,adm2_en)
+df_chirps %>% 
+  filter(!adm1_en%in% df_flood$previous_departure_region) 
+
+all(top_20_districts$previous_departure_district %in% df_chirps$adm2_en)
+
+# in adm chirs
+"Baydhaba"
+```
+
+```{r}
+
+df_flood_top20 <- df_flood %>% 
+  inner_join(
+    top_20_districts %>% 
+      select(-number_of_individuals),
+    by = c("previous_departure_region", 
+           "previous_departure_district")
+
+  ) %>% 
+  select(-contains("arrival")) %>% 
+  mutate(
+    adm2_en =case_when(
+      previous_departure_district == "Baidoa"~"Baydhaba",
+      .default = previous_departure_district
+              ),
+    yr_mo = floor_date(date, "month")
+  ) %>%
+  group_by(across(matches("_departure_")),adm2_en, yr_mo) %>% 
+  summarise(
+    number_of_individual = sum(number_of_individuals),.groups="drop"
+  )
+
+df_chirps %>% 
+  filter(
+    date >= as_date("2016-01-01"),
+    adm2_en %in% df_flood_top20$adm2_en
+  ) %>% 
+  left_join(
+    df_flood_top20,
+    by =c("adm2_en"="adm2_en","date"="yr_mo")
+  ) %>% 
+  select(date,matches("^adm\\d_[ep]"),number_of_individual, rainfall=value) %>% 
+  mutate(
+    number_of_individual = replace_na(number_of_individual,0)
+  ) %>% 
+  pivot_longer(cols = number_of_individual:rainfall
+  ) %>% 
+  ggplot(
+    aes(x= date, y= value, color=name, group=name)
+  )+
+  geom_point(size=0.4)+
+  geom_line()+
+  facet_wrap(
+    ~adm2_en,scales="free_y"
+  )
+
+
+df_chirps <- df_chirps %>% 
+  group_by(
+    across(matches("adm\\d_[pe]")),
+    mo = month(date)
+  ) %>% 
+  mutate(
+    across(value, ~ (. - mean(.)),.names = "anom_diff")
+  ) %>% 
+  ungroup()
+
+df_chirps %>% 
+  filter(
+    date >= as_date("2016-01-01"),
+    adm2_en %in% df_flood_top20$adm2_en
+  ) %>% 
+  left_join(
+    df_flood_top20,
+    by =c("adm2_en"="adm2_en","date"="yr_mo")
+  ) %>% 
+  select(date,matches("^adm\\d_[ep]"),number_of_individual, rainfall=value,anom_diff) %>% 
+  mutate(
+    number_of_individual = replace_na(number_of_individual,0),
+    # number_of_individual_scale = c(scale(number_of_individual)),
+  ) %>%
+  pivot_longer(cols = c("anom_diff","number_of_individual")
+  ) %>% 
+  ggplot(
+    aes(x= date, y= value, color=name, group=name)
+  )+
+  geom_point(size=0.4)+
+  geom_line()+
+  facet_wrap(
+    ~adm2_en,scales="free_y"
+  )
+
+df_chirps_prmn <- df_chirps %>% 
+  filter(
+    date >= as_date("2016-01-01"),
+    adm2_en %in% df_flood_top20$adm2_en
+  ) %>% 
+  left_join(
+    df_flood_top20,
+    by =c("adm2_en"="adm2_en","date"="yr_mo")
+  ) %>% 
+  select(date,matches("^adm\\d_[ep]"),number_of_individual, rainfall=value,anom_diff) %>% 
+  mutate(
+    # number_of_individual = replace_na(number_of_individual,0),
+  ) 
+  
+ df_chirps_prmn %>% 
+  ggplot(
+    
+  )+
+  geom_point(aes(x= date, y= anom_diff),size=0.4)+
+  geom_line(aes(x= date, y= anom_diff))+
+   geom_point(
+     aes(x= date, y= number_of_individual/1000),
+     color="red",size= 1.5,alpha= 0.5
+   )+
+  scale_y_continuous(
+    name = "Monthly Rainfall Anomaly (mm)",
+    sec.axis = sec_axis(
+      trans = ~ . * 1000, name = "Impacted",
+      labels=scales::label_comma()
+      ),
+    labels=scales::label_comma()
+    ) +
+   scale_x_date(
+     date_breaks = "1 year",
+     date_labels = "%Y"
+   )+
+   labs(
+     title = "Rainfall Anomaly vs Displacement",
+     subtitle = "Top 20 Districts with most flood related displacement (PRMN)"
+   )+
+   facet_wrap(
+     ~adm2_en,
+     scales="free_y"
+   )+
+   theme(
+     axis.text.x = element_text(angle = 90, size=8),
+     strip.text = element_text(size=10),
+     axis.title.x= element_blank()
+   )
+```
+
+## Imapct Ranges PRMN
+What about just getting historical range per district
+```{r}
+
+df_seas_range_adm2 <- df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas, across(matches("departure_"))) %>%
+  
+  # get the minimum and maximum impacted at each district/season
+  summarise(
+    min_indiv = min(number_of_individuals),
+    max_indiv = max(number_of_individuals)
+  )
+
+
+
+df_seas_range_adm1 <- 
+  df_seas_range_adm2 %>% 
+  summarise(
+    min_indiv = sum(min_indiv),
+    max_indiv = sum(max_indiv)
+  ) 
+
+p_box_displaced <- df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr_mo, previous_departure_region) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+  ) %>% 
+ ggplot(
+    aes(x= reorder(previous_departure_region,number_of_individuals),
+        y= number_of_individuals)
+  )+
+  geom_boxplot()+
+  geom_point(alpha =0.3)+
+  scale_y_log10(labels=scales::label_comma())+
+  labs(
+    y= "Number Individuals"
+  )+
+  coord_flip()+
+  facet_wrap(~seas,nrow=2)+
+  labs(
+    title = "Range in number displaced",
+    subtitle= "PRMN (2016-2023)"
+  )+
+  theme(
+    axis.title.y  = element_blank()
+  )
+
+df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr= year(yr_mo), previous_departure_region) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+  ) %>% 
+  ungroup() %>% 
+  
+  tidyr::complete(
+    previous_departure_region,yr,seas,
+    fill= list(number_of_individuals=0)
+  ) %>% 
+ ggplot(
+    aes(x= reorder(previous_departure_region,number_of_individuals),
+        y= number_of_individuals)
+  )+
+  geom_boxplot()+
+  geom_point(alpha =0.3)+
+  scale_y_log10(labels=scales::label_comma())+
+  labs(
+    y= "Number Individuals"
+  )+
+  coord_flip()+
+  facet_wrap(~seas,nrow=2)+
+  labs(
+    title = "Range in number displaced",
+    subtitle= "PRMN (2016-2023)"
+  )+
+  theme(
+    axis.title.y  = element_blank()
+  )
+  
+library(patchwork)  
+p_box_displaced
+```
+
+```{r}
+df_flood_displaced_adm1_seas <- df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr= year(yr_mo), previous_departure_region) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+  ) 
+
+
+df_flood_displaced_adm1_seas_complete <- df_flood_displaced_adm1_seas %>% 
+  ungroup() %>% 
+  # group_by(seas, yr) %>% 
+  tidyr::complete(
+    previous_departure_region,yr,seas,
+    fill= list(number_of_individuals=0)
+  ) 
+
+df_flood_seas_summary <- df_flood_displaced_adm1_seas_complete %>% 
+  group_by(previous_departure_region,seas) %>% 
+  summarise(
+    median = median(number_of_individuals),
+    min = min(number_of_individuals),
+    max = max(number_of_individuals),
+    n=n()
+  )
+
+df_flood_seas_summary %>% 
+  filter(!previous_departure_region%in% som_adm$adm1$adm1_en)
+
+
+df_flood_displaced_adm1_seas %>% 
+  group_by(previous_departure_region,seas) %>% 
+  summarise(
+    median = median(number_of_individuals),
+    min = min(number_of_individuals),
+    max = max(number_of_individuals),
+    n=n()
+  )
+  
+```
+
+
+```{r}
+som_adm$adm1 %>% 
+  left_join(
+    df_flood_seas_summary ,
+    by = c("adm1_en"="previous_departure_region")
+  )
+
+```
+
+
+```{r}
+p_dumbell_displaced <- df_seas_range_adm1%>% 
+  pivot_longer(
+    cols = min_indiv: max_indiv
+  ) %>% 
+  ggplot(
+    aes(x= reorder(previous_departure_region,value), y= value, group=name, color=name)
+  )+
+  geom_point()+
+  scale_y_log10(labels=scales::label_comma())+
+   geom_line(aes(group = previous_departure_region), color = "grey", alpha = 0.5, lwd = 1) +
+  labs(
+    y= "Number Individuals"
+  )+
+  coord_flip()+
+  facet_wrap(~seas,nrow=2)+
+  labs(
+    title = "Range in number displaced",
+    subtitle= "PRMN (2016-2023)"
+  )+
+  theme(
+    axis.title.y  = element_blank()
+  )
+  
+```
+
+
+```{r}
+# does make a difference if i do by year?
+
+
+df_seas_range_adm2_yr<- df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr = floor_date(date,"year"), across(matches("departure_"))) %>% 
+  summarise(
+    min_indiv = min(number_of_individuals),
+    max_indiv = max(number_of_individuals)
+  )
+
+df_seas_range_adm1_yr <- 
+  df_seas_range_adm2_yr %>% 
+  summarise(
+    min_indiv = sum(min_indiv),
+    max_indiv = sum(max_indiv)
+  ) %>% 
+  group_by(seas, previous_departure_region) %>% 
+  summarise(
+      min_indiv = min(min_indiv),
+    max_indiv = max(max_indiv)
+  )
+
+df_seas_range_adm1_yr%>% 
+  pivot_longer(
+    cols = min_indiv: max_indiv
+  ) %>% 
+  ggplot(
+    aes(x= reorder(previous_departure_region,-value), y= value, group=name, color=name)
+  )+
+  geom_point()+
+  scale_y_log10(labels=scales::label_comma())+
+   geom_line(aes(group = previous_departure_region), color = "grey", alpha = 0.5, lwd = 1) +
+  labs(
+    y= "Number Individuals"
+  )+
+  coord_flip()+
+  facet_wrap(~seas,nrow=2)+
+  labs(
+    title = "Range in number displaced",
+    subtitle= "PRMN (2016-2023)"
+  )+
+  theme(
+    axis.title.y  = element_blank()
+  )
+  
+```
+
+
+
+```{r}
+
+# process could be simplified
+df_flood_max_adm1_year <- df_flood %>% 
+  group_by(
+    previous_departure_region,
+    yr_mo = floor_date(date, "month")
+  ) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+    ,.groups="drop_last"
+  ) %>% 
+  group_by(
+    yr = floor_date(yr_mo,"year"),.add=T
+  ) %>% 
+  filter(number_of_individuals==max(number_of_individuals)) %>% 
+  ungroup() %>% 
+  mutate(
+    mo= month(yr_mo,label=T)
+  )
+
+df_flood_max_adm1_year %>% 
+  group_by(
+    mo
+  ) %>%
+  summarise(
+    number_of_individuals= sum(number_of_individuals)
+  ) %>% 
+  ggplot(aes(x= mo,
+             y = number_of_individuals))+
+  geom_point()+
+  scale_y_continuous(labels= scales::label_comma())
+```
+
+## CHIRPS vs El Nino Index (ONI)
+```{r}
+
+df_chirps_seas_oni <- df_chirps %>% 
+  mutate(
+    seas = case_when(
+      month(date) %in% c(3,4,5)~"MAM",
+      month(date) %in% c(10,11,12)~"OND"
+    )
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(
+    adm1_en,adm1_pcode,adm2_pcode,adm2_en,
+    year = floor_date(date, "year"),
+    yr = year(year),
+    seas
+  ) %>% 
+  summarise(
+    value = sum(value)
+  ) %>% 
+  left_join(df_oni, by = c("seas","yr")) 
+
+
+df_chirps_seas_oni %>% 
+  ggplot(aes(x= anom,y= value))+
+  geom_point()
+
+df_chirps_seas_oni %>% 
+  ggplot(aes(x= anom,y= value,group=anom))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  ?geom_boxplot()
+
+df_chirps_seas_oni %>% 
+  ggplot(aes(x= anom,y= value,group=anom))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  geom_boxplot()+
+    facet_wrap(~adm1_en)
+
+df_chirps_seas_oni %>% 
+  filter(seas=="OND") %>% 
+  ggplot(aes(x= anom,y= value, group=adm2_en))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  geom_point(size =0.3)+
+  facet_wrap(~adm1_en)+
+  geom_vline(
+    xintercept = 0.5, linetype = "dashed",
+    color = hdx_hex("tomato-hdx")
+  )+
+  labs(
+    y= "Rainfall (mm)",
+        title = "Somalia: CHIRPS Historical - October-November-December (OND) Vs. El Nino Index",
+    subtitle = "Red line indicates predicted El Nino Index for OND 2024",
+    caption = "Highest ONI values to correspond to higher historical rainfalls in OND in many regions, but lower positive anomalies in the range of what is predicted for 2024 show littler correlation"
+  )+
+  theme(
+    axis.text.x= element_text(angle=90),
+    plot.caption = element_text(hjust=0)
+  )
+
+df_chirps_seas_oni %>% 
+  filter(seas=="MAM") %>% 
+  ggplot(aes(x= anom,y= value, group=adm2_en))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  geom_point(size =0.3)+
+  facet_wrap(~adm1_en)+
+  geom_vline(
+    xintercept = 1, linetype = "dashed",
+    color = hdx_hex("tomato-hdx")
+  )+
+    labs(
+      y= "Rainfall (mm)",
+    title = "Somalia: CHIRPS Historical - March-April-May (MAM) Vs. El Nino Index",
+    subtitle = "Red line indicates predicted El Nino Index for MAM 2024",
+    caption = "Little correlation between El Nino Index & Historical MAM rainfall"
+    
+  )+
+  theme(
+    axis.text.x= element_text(angle=90),
+    plot.caption = element_text(hjust=0)
+  )
+  
+
+```
+
+

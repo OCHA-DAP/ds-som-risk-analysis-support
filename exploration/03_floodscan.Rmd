@@ -1,0 +1,68 @@
+---
+title: "floodscan"
+output: html_document
+date: "2023-10-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidyverse)
+library(sf)
+library(tidync)
+library(rhdx)
+
+som_adm0_levels <- c(
+  "som_admbnda_adm0_ocha_20230308",
+  "som_admbnda_adm1_ocha_20230308",
+  "som_admbnda_adm2_ocha_20230308"
+)
+
+som_adm <- som_adm0_levels %>%
+  map(
+    ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
+      pluck(1) %>%
+      get_resource(2) %>%
+      read_resource(layer = .x) %>%
+      clean_names() %>%
+      select(matches("^adm\\d_"))
+  ) %>%
+  set_names(c("adm0", "adm1", "adm2"))
+
+fp_fs <-   file.path(
+    Sys.getenv("AA_DATA_DIR"),
+    "private",
+    "raw",
+    "glb",
+    "floodscan",
+    "floodscan_flooded_fraction_africa_19980112-20221231_p00",
+    "aer_sfed_area_300s_19980112_20221231_v05r01.nc"
+  )
+
+
+
+tnc_fs <- tidync(fp_fs)
+tnc_fs_filt <- fs_filter_bounds(fs_obj = fs,geometry = som_adm$adm0)
+r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
+```
+
+```{r}
+
+```
+
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
