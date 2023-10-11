@@ -21,6 +21,25 @@ library(janitor)
 library(gghdx)
 gghdx()
 
+som_adm0_levels <- c(
+  "som_admbnda_adm0_ocha_20230308",
+  "som_admbnda_adm1_ocha_20230308",
+  "som_admbnda_adm2_ocha_20230308"
+)
+
+som_adm <- som_adm0_levels %>%
+  map(
+    ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
+      pluck(1) %>%
+      get_resource(2) %>%
+      read_resource(layer = .x) %>%
+      clean_names() %>%
+      select(matches("^adm\\d_"))
+  ) %>%
+  set_names(c("adm0", "adm1", "adm2"))
+
+
+
 dir_som_pub_raw <- file.path(
   Sys.getenv("AA_DATA_DIR"),
   "public",
@@ -74,6 +93,63 @@ df_flood %>%
   count(previous_departure_region)
   
 ```
+
+```{r}
+gdf_adm1 <- som_adm$adm1 %>%
+  mutate(
+    hno_intl_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # International
+      # Hirshabelle
+      adm1_en %in% c("Middle Shabelle", "Hiraan") ~ "Hirshabelle",
+      # Jubaland
+      adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
+      # Puntland
+      adm1_en %in% c("Bari") ~ "Puntland",
+      # South WestState
+      adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
+      .default = NA
+    ),
+    hno_interclan_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # Hiran
+      adm1_en %in% c("Hiraan") ~ "Hiraan",
+      # Middle Shabelle
+      adm1_en %in% c("Middle Shabelle") ~ "Middle Shabelle",
+      adm1_en %in% c("Lower Shabelle") ~ "Lower Shabelle",
+
+      # Sool
+      adm1_en %in% c("Sool") ~ "Sool Regions",
+      .default = NA
+    ),
+    hno_flood_class = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # International
+      # Hirshabelle
+      adm1_en %in% c("Middle Shabelle", "Hiraan") ~ "Hirshabelle",
+      # Jubaland
+      adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
+      # Puntland
+      adm1_en %in% c("Bari") ~ "Puntland",
+      # South WestState
+      adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
+      adm1_en %in% c("Awdal", 
+                     "Woqooyi Galbeed",
+                     "Jeeh",
+                     "Togdheer", 
+                     "Sanaag",
+                     "Sool")~ "Somaliland",
+      .default = adm1_en
+    )
+  )
+```
+
 
 ```{r}
 df_flood %>% 
@@ -155,6 +231,130 @@ df_flood %>%
     axis.text.x = element_text(angle=90),
     axis.title.x = element_blank()
   )
+
+
+# want to organize. N-S so let's loop through HNO groups
+state_names <- gdf_adm1 %>% 
+  pull(hno_flood_class) %>% 
+  unique()  
+  p_prmn_bar_by_state <- map(
+    set_names(state_names),
+    \(state_name){
+      gdf_tmp <- gdf_adm1 %>% 
+        filter(hno_flood_class==state_name) 
+      
+      x_txt_size = ifelse(state_name=="Somaliland",8,11)
+      df_flood %>% 
+        group_by(
+          mo= month(date,label=T), 
+          previous_departure_region
+        ) %>%
+        summarise(
+          number_of_individuals = sum(number_of_individuals),
+          .groups = "drop"
+          ) %>%
+        filter(previous_departure_region %in% gdf_tmp$adm1_en) %>%
+        complete(mo,previous_departure_region) %>% 
+        # filter(previous_departure_region!="Hiraan") %>%
+        ggplot(
+        )+
+        geom_bar(
+          aes(x= mo, y= number_of_individuals),
+          stat="identity"
+        )+
+        geom_rect(
+          data= df_rect_seas,
+          aes(
+            xmin = start,
+            xmax = end,
+            ymin = -Inf,
+            ymax = Inf
+          ),
+          alpha = 0.15,
+          fill = hdx_hex("tomato-hdx")
+        )+
+        facet_wrap(~previous_departure_region)+
+        scale_y_continuous(labels = scales::label_comma())+
+        labs(
+          subtitle = state_name
+          
+          
+        )+
+        theme(
+          panel.background = element_rect(color="grey",fill=NA),
+          axis.text.x = element_text(angle=90,size = x_txt_size),
+          axis.title.y = element_blank(),
+          axis.title.x =   element_blank()
+        )
+    }
+    
+  )
+library(patchwork)
+p_prmn_bar_by_state$Somaliland+
+  p_prmn_bar_by_state$Puntland+
+  p_prmn_bar_by_state$Nugaal+
+    plot_layout(ncol = 3,widths = c(),heights = c())+
+  plot_annotation(title = "PRMN: Displacement From Flooding (Northern regions)",
+                  subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red",
+                  caption = "Source: PRMN"
+                  # theme = theme(plot.title = element_text(hjust = 0.5))
+  )
+
+
+
+  p_prmn_bar_by_state$Galmadug+
+  p_prmn_bar_by_state$Hirshabelle+
+  p_prmn_bar_by_state$`South West State`+
+  p_prmn_bar_by_state$Banadir+
+  p_prmn_bar_by_state$Jubaland+
+  plot_layout(ncol = 2,widths = c(),heights = c())+
+  plot_annotation(title = "PRMN: Displacement From Flooding (Southern regions)",
+                  subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red",
+                  caption = "Source: PRMN"
+                  # theme = theme(plot.title = element_text(hjust = 0.5))
+  )
+    
+df_flood %>% 
+  group_by(
+    mo= month(date,label=T), 
+    previous_departure_region
+    ) %>%
+  summarise(number_of_individuals = sum(number_of_individuals)) %>%
+  filter(previous_departure_region!="Hiraan") %>%
+  ggplot(
+  )+
+
+  geom_bar(
+    aes(x= mo, y= number_of_individuals),
+    stat="identity"
+    )+
+    geom_rect(
+    data= df_rect_seas,
+      aes(
+      xmin = start,
+      xmax = end,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.15,
+    fill = hdx_hex("tomato-hdx")
+  )+
+  # geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN: Displacement Fromm Flooding",
+    y= "Number of displaced individuals",
+    subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+
+
 
 df_flood %>% 
   ggplot(

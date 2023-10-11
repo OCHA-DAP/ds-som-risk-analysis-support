@@ -23,6 +23,7 @@ library(exactextractr)
 library(janitor)
 library(terra)
 library(glue)
+library(exactextractr)
 source("R/utils_floodscan.R")
 som_adm0_levels <- c(
   "som_admbnda_adm0_ocha_20230308",
@@ -152,6 +153,7 @@ ext(r_fs_yearly_max_crop) <- ext(r_wp)
 system.time(
 r_fs_monthly_resampled <- terra::resample(x = r_fs_monthly_max_crop,r_wp)  
 )
+
 system.time(
 r_fs_yearly_resampled <- terra::resample(x = r_fs_yearly_max_crop,r_wp)  
 )
@@ -160,12 +162,14 @@ r_fs_yearly_resampled <- terra::resample(x = r_fs_yearly_max_crop,r_wp)
 
 multiply world pop and fs
 ```{r}
-r_fs_wp<- r_fs_resampled * r_wp
+r_fs_mo_wp<- r_fs_monthly_resampled * r_wp
+r_fs_yr_wp<- r_fs_yearly_resampled * r_wp
 ```
 
 # zonal stats flood scan
 ```{r}
 
+rt <- rast("/Users/zackarno/Downloads/SOM_ppp_2020_adj_v2.tif")
 df_zonal_fl_pop<- exact_extract(x = r_fs_wp,
                                 y = som_adm$adm1, 
                                 fun ="sum",
@@ -175,6 +179,31 @@ df_zonal_fl_pop<- exact_extract(x = r_fs_wp,
   separate(name,
            into = c("stat", "date"),
            sep = "\\.")
+df_wp_adm1<- exact_extract(x = r_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.")
+
+sum(df_rt_adm1$value)
+sum(df_wp_adm1$value)
+
+df_rt_adm1<- exact_extract(x = rt,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.")
+
+df_wp_adm1$value %>% sum()
+
 
 df_zonal_fl_pop <- df_zonal_fl_pop %>% 
   mutate(
