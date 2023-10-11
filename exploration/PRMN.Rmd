@@ -19,6 +19,7 @@ library(tidyverse)
 library(readxl)
 library(janitor)
 library(gghdx)
+gghdx()
 
 dir_som_pub_raw <- file.path(
   Sys.getenv("AA_DATA_DIR"),
@@ -82,7 +83,124 @@ df_flood %>%
   geom_point()+
   geom_line()+
   facet_wrap(~previous_departure_region)+
-  scale_y_continuous(labels = scales::label_comma())
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN: Displacement Fromm Flooding",
+    y= "Number of displaced individuals"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90)
+  )
+df_flood %>% 
+  filter(previous_departure_region!="Hiraan") %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN: Displacement Fromm Flooding",
+    y= "Number of displaced individuals"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90)
+  )
+
+
+df_rect_seas <- 
+  tibble(start = c("Mar","Oct"),end= c("Jun","Dec"))
+
+df_flood %>% 
+  group_by(
+    mo= month(date,label=T), 
+    previous_departure_region
+    ) %>%
+  summarise(number_of_individuals = sum(number_of_individuals)) %>%
+  filter(previous_departure_region!="Hiraan") %>%
+  ggplot(
+  )+
+
+  geom_bar(
+    aes(x= mo, y= number_of_individuals),
+    stat="identity"
+    )+
+    geom_rect(
+    data= df_rect_seas,
+      aes(
+      xmin = start,
+      xmax = end,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.15,
+    fill = hdx_hex("tomato-hdx")
+  )+
+  # geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN: Displacement Fromm Flooding",
+    y= "Number of displaced individuals",
+    subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+
+df_flood %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma(),trans=scales::pseudo_log_trans())+
+  labs(
+    title = "PRMN Displacement Data by Region",
+    y= "Number of displaced individuals"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90)
+  )
+
+df_flood %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~previous_departure_region,scales = "free")+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN Displacement Data by Region",
+    y= "Number of displaced individuals"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90)
+  )
+
+
+
+
+df_flood %>% 
+  filter(year(date)==2023,
+         previous_departure_region=="Hiraan"
+         ) %>% 
+  View()
+
 ```
 
 # Top 10 districts vs Rainfall
@@ -336,7 +454,10 @@ df_flood %>%
   )+
   geom_boxplot()+
   geom_point(alpha =0.3)+
-  scale_y_log10(labels=scales::label_comma())+
+  scale_y_continuous(trans = scales::pseudo_log_trans(),
+                     labels=scales::label_comma(),
+                     breaks = c(0,25,50,100,200,1000,10000, 50000)
+                     )+
   labs(
     y= "Number Individuals"
   )+
@@ -404,12 +525,172 @@ df_flood_displaced_adm1_seas %>%
 
 
 ```{r}
-som_adm$adm1 %>% 
+som_adm1_w_prmn <- som_adm$adm1 %>% 
   left_join(
     df_flood_seas_summary ,
     by = c("adm1_en"="previous_departure_region")
+  ) %>% 
+  mutate(
+    adm_label = paste0(adm1_en,
+                       ":\n",
+                       "median:",
+                       median,"\nmax: ",max),
+       CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1),
+    COORDS_Y = map_dbl(COORDS, 2)
   )
 
+l_som_adm1_w_prmn<- som_adm1_w_prmn %>% 
+  split(.$seas)
+
+
+
+som_adm1_w_prmn %>% 
+  filter(median!=0)
+
+ggplot()+
+  geom_sf(
+    data = l_som_adm1_w_prmn$MAM ,
+    alpha = 1,
+    aes(fill = median)
+  ) +
+  scale_fill_continuous(
+    trans = scales:::pseudo_log_trans()
+    )+
+  geom_text_repel(
+    data= l_som_adm1_w_prmn$MAM,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm_label
+    ),
+     size= 3
+  )
+    
+
+library(ggfx)
+
+gdf_adm1_class <- gdf_adm1 %>%
+  mutate(
+    hno_intl_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # International
+      # Hirshabelle
+      adm1_en %in% c("Middle Shabelle", "Hiraan") ~ "Hirshabelle",
+      # Jubaland
+      adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
+      # Puntland
+      adm1_en %in% c("Bari") ~ "Puntland",
+      # South WestState
+      adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
+      .default = NA
+    ),
+    hno_interclan_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # Hiran
+      adm1_en %in% c("Hiraan") ~ "Hiraan",
+      # Middle Shabelle
+      adm1_en %in% c("Middle Shabelle") ~ "Middle Shabelle",
+      adm1_en %in% c("Lower Shabelle") ~ "Lower Shabelle",
+
+      # Sool
+      adm1_en %in% c("Sool") ~ "Sool Regions",
+      .default = NA
+    ),
+  )
+     
+gdf_adm1_class %>%
+  ggplot() +
+  geom_sf(
+    aes(
+      fill = hno_intl_conflict
+    )
+  ) +
+  scale_fill_discrete(
+    name = "Non-Intl\nArmed Conflict",
+    na.translate = F
+  ) +
+  labs(
+    title = "Somalia - Regions highlighted for Non-Intl Armed Conflict (Al Shabab)",
+    subtitle = "Groupings in legend from 2023 HNO"
+  )
+
+gdf_adm1_class %>%
+  ggplot() +
+  geom_sf(
+    aes(
+      fill = hno_interclan_conflict
+    )
+  ) +
+  scale_fill_discrete(
+    name = "Interclan\nViolence", na.translate = F
+  ) +
+  labs(
+    title = "Somalia - Regions highlighted for inter-clan violence",
+    subtitle = "Groupings in legend from 2023 HNO"
+  )
+
+
+gdf_adm1_acled_shabaab <- gdf_adm1_class %>%
+  left_join(df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Al Shabaab Related"
+              ), by = c("adm1_en" = "admin1"))
+
+
+gdf_intl_groups_dissolved <- gdf_adm1_class %>%
+  filter(!is.na(hno_intl_conflict)) %>%
+  group_by(
+    hno_intl_conflict
+  ) %>%
+  summarise()
+
+ggplot() +
+  geom_sf(
+    data = gdf_adm1_acled_shabaab,
+    aes(fill = diff),
+    alpha = 1
+  ) +
+  with_shadow(
+    geom_sf(
+      data = gdf_intl_groups_dissolved,
+      # aes(fill= diff),
+      fill = NA,
+      alpha = 1,
+      color = "black",
+      lwd = 1
+    ),
+    sigma = 3, x_offset = 0.5,
+    y_offset = 0.25
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_intl_groups_dissolved,
+      aes(label = str_wrap(hno_intl_conflict, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Increase/Decrease in conflict-related fatalities 2022-2023",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define Al-Shabaab related zones",
+    caption = "Only fatalities in which Al-Shabaab was involved"
+  )+
+  theme(
+    plot.title = element_text(size=14),
+    plot.subtitle = element_text(size=12),
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0)
+  )
+```
 ```
 
 
