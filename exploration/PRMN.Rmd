@@ -136,7 +136,7 @@ gdf_adm1 <- som_adm$adm1 %>%
       # Jubaland
       adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
       # Puntland
-      adm1_en %in% c("Bari") ~ "Puntland",
+      adm1_en %in% c("Bari","Nugaal") ~ "Puntland",
       # South WestState
       adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
       adm1_en %in% c("Awdal", 
