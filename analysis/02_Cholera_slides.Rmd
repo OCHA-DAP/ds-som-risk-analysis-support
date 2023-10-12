@@ -1,0 +1,355 @@
+---
+title: "02_Cholera"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 4
+date: "2023-10-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  results = "asis"
+)
+```
+
+## Intro
+
+This office explores the cholera data shared by the somalia country OCHA office
+
+```{r cars}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(ISOweek)
+library(gghdx)
+library(ggfx)
+library(snakecase)
+library(patchwork)
+library(rhdx)
+gghdx()
+
+fp_cholera_data <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "raw",
+  "som", "Cholera data W1-51 2022.xlsx"
+)
+
+ldf_cholera <- set_names(excel_sheets(fp_cholera_data)) %>%
+  map(\(sn){
+    set_names(sn)
+    read_xlsx(fp_cholera_data, sn) %>%
+      clean_names()
+  })
+
+
+# add dates to year + week combo so we can work w/ dates
+df_weekly <- ldf_cholera$Sheet1 %>%
+  mutate(
+    w = paste0(year, "-W", formatC(epi_week, width = 2, flag = "0"), "-1"),
+    date = ISOweek2date(w),
+    .after = epi_week
+  )
+
+# pull somalia admin1
+gdf_adm1 <- search_datasets(query = "cod-ab-som") %>%
+  pluck(1) %>%
+  get_resource(2) %>%
+  # get_resource_layers() %>%
+  read_resource(layer = "som_admbnda_adm1_ocha_20230308") %>%
+  clean_names() %>%
+  select(matches("^adm\\d_"))
+```
+
+
+## National Level Cholera
+
+overview of national level weekly cholera figures 
+
+```{r}
+df_weekly %>%
+  group_by(date) %>%
+  summarise(
+    total_cases = sum(total_cases, na.rm = T)
+  ) %>%
+  ggplot(
+    aes(x = date, y = total_cases)
+  ) +
+  geom_line()
+```
+
+## Admin 1 Cholera
+
+over view of admin 1 level weekly cholera figures
+
+```{r}
+df_region_weekly <- df_weekly %>%
+  mutate(
+    region = to_snake_case(region)
+  ) %>%
+  group_by(region,epi_week, date) %>%
+  summarise(
+    total_cases = sum(total_cases, na.rm = T), .groups = "drop"
+  )
+
+df_region_weekly %>%
+  ggplot(
+    aes(x = date, y = total_cases, color = region)
+  ) +
+  geom_line() +
+  scale_color_brewer(type = "qual", palette = "Paired") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%y-%b") +
+  scale_y_continuous_hdx(breaks = seq(0, 900, 100)) +
+  labs(
+    y = "Total Cases",
+    title = "Cholera Cases",
+    subtitle = "Somalia 2022- 2023 by Region"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+## Admin 1 - 2022 vs 2023
+
+### Normalize Dates
+
+```{r}
+# to compare 2022 vs 2023 properly we need to filter 2022 to the same temporal span as 2023
+latest_epi_week <-  df_region_weekly %>% 
+  filter(date==max(date)) %>% 
+  pull(epi_week) %>% 
+  unique()
+
+df_region_weekly_norm <- df_region_weekly %>% 
+  filter(
+    epi_week <= latest_epi_week
+  ) 
+
+# check - looks good
+df_region_weekly_norm %>% 
+  group_by(
+    yr = year(date)
+  ) %>% 
+  summarise(
+    min = min(date),
+    max= max(date)
+  )
+
+```
+
+### Dumbell + Barchart
+```{r}
+df_region_yearly <- df_region_weekly_norm %>%
+  mutate(
+    yr = year(date),
+  ) %>%
+  group_by(
+    region,
+    yr
+  ) %>%
+  summarise(
+    total_cases = sum(total_cases),
+    .groups="drop"
+  )
+
+df_region_yearly_dumbell <- df_region_yearly %>%
+  group_by(region) %>%
+  filter(!all(total_cases == 0)) %>%
+  mutate(
+    yr = as_factor(yr)
+  ) %>%
+  pivot_wider(
+    names_from = yr,
+    values_from = total_cases
+  ) %>%
+  mutate(
+    class_diff = ifelse(`2023` > `2022`, "increase", "decrease")
+  ) %>%
+  pivot_longer(
+    cols = c("2022", "2023"),
+    names_to = "yr", values_to = "total_cases"
+  ) %>%
+  ungroup()
+
+# get the regions in the order they are shown in dumbell 
+# so that I can align in bar chart so that they will match up nicely
+# when put side by side w/ `{patchwork}`
+region_order <- df_region_yearly_dumbell %>%
+  group_by(region) %>%
+  summarise(
+    mean_case = mean(total_cases)
+  ) %>%
+  arrange(mean_case) %>%
+  pull(region)
+
+p_dumbell <- df_region_yearly_dumbell %>%
+  mutate(
+    region = fct_relevel(region, region_order)
+  ) %>%
+  ggplot(
+    aes(
+      x = region,
+      y = total_cases,
+      fill = yr
+    )
+  ) +
+  geom_point(aes(color = yr), size = 3) +
+  geom_line(aes(group = region), color = "grey", alpha = 0.5, lwd = 1) +
+  labs(
+    y = "Total Cases",
+    title = "Somalia - Cholera",
+    subtitle = "Total cases per regions (2022 & 2023)"
+  ) +
+  coord_flip() +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank()
+  )
+
+df_region_yearly_change <- df_region_yearly %>%
+  ungroup() %>%
+  # put in wide format to make it easier to subtract
+  # 2022 from 2023
+  pivot_wider(
+    names_from = yr,
+    values_from = total_cases
+  ) %>%
+  filter(!(`2023` == 0 & `2022` == 0)) %>%
+  mutate(
+    `2022` = replace_na(`2022`, 0),
+    `2023` = replace_na(`2023`, 0),
+    diff_change = `2023` - `2022`,
+    pct_change = (`2023` - `2022`) / (`2022`),
+    class_change = ifelse(pct_change < 0, "negative", "positive"),
+    region = fct_relevel(region, region_order)
+  )
+
+
+# pct change barplot - Think it's actually misleading
+# so better to use absolute difference
+p_bar_pct_change <- df_region_yearly_change %>%
+  ggplot(
+    aes(x = region, y = pct_change, fill = class_change)
+  ) +
+  geom_bar(stat = "identity", color = "grey") +
+  scale_fill_manual(
+    values = c(
+      `positive` = hdx_hex("tomato-hdx"),
+      `negative` = hdx_hex("sapphire-hdx")
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(-1, 1, by = 0.1),
+    labels = paste0(c(seq(-100, 90, 10), "≥ 100"), "%"),
+    limits = c(-1, 1)
+  ) +
+  coord_flip() +
+  labs(
+    title = "Somalia - Cholera Cases",
+    subtitle = "% increase increase from 2022-23 by region"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90),
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+
+# absolute change in cases from 2022-> 2023 by admin 1
+p_bar_absolute_change <- df_region_yearly_change %>%
+  ggplot(
+    aes(x = region, y = diff_change, fill = class_change)
+  ) +
+  geom_bar(stat = "identity", color = "grey") +
+  scale_fill_manual(
+    values = c(
+      `positive` = hdx_hex("tomato-hdx"),
+      `negative` = hdx_hex("sapphire-hdx")
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(-2500, 4000, by = 500)
+  ) +
+  coord_flip() +
+  labs(
+    title = "Somalia - Cholera Cases",
+    subtitle = "Increase/decrease from 2022-23 by region"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90),
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+
+# combine
+p_dumbell +
+  p_bar_absolute_change +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  plot_layout(ncol = 2)
+```
+
+## Maps
+
+```{r out.width="100%",out.height=10}
+df_region_yearly_adm_labelled <- df_region_yearly_change %>%
+  mutate(
+    # harmonize names to join w/ admin 1 COD
+    adm1 = str_replace(region, "_", " ") %>% str_to_title(),
+    adm1 = str_replace(adm1, "Hiran", "Hiraan")
+  )
+
+# check that names are harmonized - good
+df_region_yearly_adm_labelled %>%
+  filter(!adm1 %in% gdf_adm1$adm1_en)
+
+gdf_adm1_cholera <- gdf_adm1 %>%
+  left_join(df_region_yearly_adm_labelled, by = c("adm1_en" = "adm1"))
+
+# plot
+p_map_cholera_change <- ggplot() +
+  geom_sf(
+    data = gdf_adm1_cholera,
+    aes(fill = diff_change),
+    alpha = 1
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_adm1_cholera %>%
+        filter(!is.na(diff_change)),
+      aes(label = str_wrap(adm1_en, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Change in total reported cholera cases (2022 to 2023)"
+  )
+p_map_cholera_change
+```
+
+Might be cool to combine all 3 , but needs to exported large!
+```{r, eval =F}
+# combine
+p_dumbell +
+  p_bar_absolute_change +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  p_map_cholera_change+
+  plot_layout(ncol = 3)
+```
