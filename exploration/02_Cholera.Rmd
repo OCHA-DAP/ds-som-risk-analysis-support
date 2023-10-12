@@ -93,7 +93,7 @@ df_region_weekly <- df_weekly %>%
   mutate(
     region = to_snake_case(region)
   ) %>%
-  group_by(region, date) %>%
+  group_by(region,epi_week, date) %>%
   summarise(
     total_cases = sum(total_cases, na.rm = T), .groups = "drop"
   )
@@ -126,14 +126,15 @@ df_region_weekly %>%
 df_region_weekly$date %>% max()
 
 # to compare 2022 vs 2023 properly we need to filter 2022 to the same temporal span as 2023
-df_region_weekly_norm <- df_region_weekly %>%
-  mutate(
-    yr = year(date)
-  ) %>%
-  filter(
-    !(yr == 2023 & date == "2022-08-14")
-  )
+latest_epi_week <-  df_region_weekly %>% 
+  filter(date==max(date)) %>% 
+  pull(epi_week) %>% 
+  unique()
 
+df_region_weekly_norm <- df_region_weekly %>% 
+  filter(
+    epi_week <= latest_epi_week
+  ) 
 
 df_region_weekly_norm %>%
   mutate(
@@ -243,6 +244,8 @@ df_region_yearly_change <- df_region_yearly %>%
   ) %>%
   filter(!(`2023` == 0 & `2022` == 0)) %>%
   mutate(
+    `2022` = replace_na(`2022`, 0),
+    `2023` = replace_na(`2023`, 0),
     diff_change = `2023` - `2022`,
     pct_change = (`2023` - `2022`) / (`2022`),
     class_change = ifelse(pct_change < 0, "negative", "positive"),
