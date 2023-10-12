@@ -370,4 +370,144 @@ p_dumbell +
   plot_layout(ncol = 3)
 ```
 
+## Quick Look at ECDC
+
+```{r}
+# e is short for ECDC
+# w is short for WHO
+library(countrycode)
+library(snakecase)
+fp_e <- file.path(
+  Sys.getenv("GLOBAL_MONITORING_DIR"),
+  "analysis",
+  "cholera_exploration",
+  "inputs",
+  "Cholera Worldwide Monitoring_EI.xlsx"
+)
+
+
+dfe_raw <- read_xlsx(fp_e,"Dataset") 
+
+dfe_c1 <- dfe_raw %>%
+  clean_names() %>% 
+  mutate(
+    date= as_date(date_rep),
+    week = week(date),
+    yr= year(date),
+    country_std= countryname(country_exp),
+    country_iso3= countryname(country_exp,destination="iso3c"),
+    data_source = "ECDC",
+    .before = country_exp
+  )
+
+# check countrycode -- looks good
+dfe_c1 %>% 
+  select(starts_with("country")) %>% 
+  filter(to_snake_case(country_std)!=to_snake_case(country_exp)) %>% 
+  distinct(country_std,country_exp)
+
+# insepect duplicates - looking at these I think if it is the exact same reported date and country
+# they look like true duplicates and we can be conservative and take the max value
+dfe_c1 %>% 
+  get_dupes(country_iso3,date_rep) %>% 
+  print(n=nrow(.))
+
+dfe_c2 <- dfe_c1 %>% 
+  # some grouping systematic grouping and slicing to
+  # retain most conservative records
+  group_by(country_iso3,date_rep) %>% 
+  slice_max(order_by = cases) %>% 
+  group_by(cases, .add=T) %>% 
+  slice_max(order_by = deaths) %>% 
+  group_by(deaths, .add=T) %>% 
+  slice_max(conf_cases) %>% 
+  group_by(country_iso3,date_rep) %>% 
+  # last step complete de-duplication
+  slice_max(order_by = cases, with_ties = F) %>% 
+  ungroup()
+
+# now let's look at weekly duplicates - these smell like duplicates
+# rather than records that should be summed
+dfe_c2 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+
+dfe_c3 <- dfe_c2 %>% 
+  # if all these vars are the same - it's a duplicate and we use `with_ties=F` 
+  # to just take 1
+  group_by(country_iso3,date_rep_curve_we,cases,conf_cases,deaths) %>% 
+  slice_max(order_by=cases,with_ties = F) %>% 
+  # if they have the same number of conf_cases & deaths but different 
+  # cases lets go w/ highest cases
+  group_by(country_iso3,date_rep_curve_we,conf_cases,deaths) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  # next if same number of conf cases go w/ max cases
+  group_by(country_iso3,date_rep_curve_we,conf_cases) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  # nex if same number of deaths go w/ max
+  group_by(country_iso3,date_rep_curve_we,deaths) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  ungroup()
+
+# now we aer getting into the territory of potential cases that should be added
+dfe_c3 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+# these are a little hard to say....I lean towards duplicates - so will take highest cases for now
+dfe_c4 <- dfe_c3 %>% 
+  group_by(country_iso3,date_rep_curve_we) %>% 
+  slice_max(order_by = cases) %>% 
+  ungroup()
+
+# bam
+dfe_c4 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+# just call the cleaned df - dfe
+dfe <- dfe_c4
+
+dfe_som <- dfe %>% 
+  filter(country_iso3=="SOM") %>% 
+  group_by(date=floor_date(date,"month") ) %>% 
+  summarise(
+    cases=sum(cases)
+  ) %>% 
+  mutate(
+    yr= year(date),
+    mo=month(date,label=T)
+    
+  ) 
+
+# complete sequence of dates in data frame using these and tidyr comlete
+date_seq_to_complete <- seq(as.Date("2017-01-01"),as.Date("2023-12-01"),by="month")
+dfe_som %>% 
+  filter(year(date)>2016) %>% 
+  complete(date=date_seq_to_complete) %>% 
+  mutate(
+    yr = year(date),
+    mo =month(date, label=T)
+  ) %>% 
+  ggplot(aes(
+    x=mo,
+    y= cases,
+    group=yr
+    ))+
+  geom_point()+
+  geom_line()+
+  labs(
+    title = "Somalia Cholera Cases",
+    subtitle= "Data from ECDC national surveillance system"
+    
+  )+
+  facet_wrap(~yr,scales = "free_y")+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title.x = element_blank()
+  )
+
+```
 
