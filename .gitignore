@@ -1,0 +1,17 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.scrapy
+.venv
+
+
+*.gif
+*.html
+*.png
+*.pdf
+*.svg
+*.tif
+
+
+
