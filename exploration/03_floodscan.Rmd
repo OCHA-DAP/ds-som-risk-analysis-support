@@ -132,7 +132,7 @@ lr_yearly_max <- unique(fs_lookup$fs_yr) %>%
   map(
     \(yr_tmp){
       rname_temp<- fs_lookup %>% 
-        filter(fs_mo==yr_tmp) %>% 
+        filter(fs_yr==yr_tmp) %>% 
         pull(fs_name)
       r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
       r_max <- max(r_fs_tmp)
@@ -170,7 +170,7 @@ r_fs_yr_wp<- r_fs_yearly_resampled * r_wp
 ```{r}
 
 rt <- rast("/Users/zackarno/Downloads/SOM_ppp_2020_adj_v2.tif")
-df_zonal_fl_pop<- exact_extract(x = r_fs_wp,
+df_zonal_fl_pop<- exact_extract(x = r_fs_mo_wp,
                                 y = som_adm$adm1, 
                                 fun ="sum",
                                 append_cols= c("adm1_en","adm1_pcode")
@@ -179,6 +179,30 @@ df_zonal_fl_pop<- exact_extract(x = r_fs_wp,
   separate(name,
            into = c("stat", "date"),
            sep = "\\.")
+df_adm2_fl_pop<- exact_extract(x = r_fs_mo_wp,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.")
+
+# yearly max zonal
+df_zonal_fl_pop_yr<- exact_extract(x = r_fs_yr_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.")
+
+
+
+
 df_wp_adm1<- exact_extract(x = r_wp,
                                 y = som_adm$adm1, 
                                 fun ="sum",
@@ -210,11 +234,34 @@ df_zonal_fl_pop <- df_zonal_fl_pop %>%
     date=as_date(date)
   )
   
+df_zonal_fl_pop_yr <- df_zonal_fl_pop_yr %>% 
+  mutate(
+    date=as_date(date)
+  )
+  
 ```
 
 ```{r}
 # Population expose
 df_zonal_fl_pop %>% 
+  ggplot(aes(x= date, y = value, group=adm1_en))+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs(title = "Population exposed to flooding")+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.title.x =  element_blank()
+  )
+
+df_zonal_fl_pop_yr <- df_zonal_fl_pop_yr %>% 
+  mutate(date= as_date(date))
+
+df_zonal_fl_pop_yr %>% 
   ggplot(aes(x= date, y = value, group=adm1_en))+
   geom_line()+
   scale_y_continuous(labels = scales::label_comma())+
@@ -336,8 +383,31 @@ df_zonal_fl_pop_anom %>%
   )
 ```
 
-# Join w/ PRMN?
+# Join w/ PRMN - by region
 ```{r}
+library(readxl)
+dir_som_pub_raw <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "raw",
+  "som")
+
+fp_prmn <- file.path(dir_som_pub_raw,
+          "prmn",
+          "UNHCR-PRMN-Displacement-Dataset.xlsx"
+          )
+df_prmn <- read_xlsx(fp_prmn) %>% 
+  clean_names()
+
+df_prmn <-  df_prmn %>% 
+  filter(reason=="Flood") %>% 
+  mutate(
+    date= dmy(month_end),
+    yr_mo = floor_date(date, "month"),
+    ,.before= everything()
+  )
+
+
 df_fs_prmn <- df_zonal_fl_pop_anom %>% 
   left_join(
     df_flood, by = c("date"="yr_mo",
@@ -395,7 +465,212 @@ df_fs_prmn_seas %>%
 ```
 
 ```{r}
+df_prmn_baidoa_fs <- df_prmn %>% 
+  filter(
+   previous_departure_district== "Baidoa"
+  ) %>% 
+  group_by(yr_mo) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals,na.rm=T)
+  ) %>% 
+  left_join(
+    df_adm2_fl_pop %>% 
+      mutate(
+        date= as_date(date)
+      ) %>% 
+  filter(adm2_en=="Baydhaba") ,
+  by = c("yr_mo"="date")
+  )
+df_prmn_baidoa_fs <- 
+  left_join(
+    df_adm2_fl_pop %>% 
+      mutate(
+        date= as_date(date)
+      ) %>% 
+      filter(year(date)>=2016,
+             adm2_en=="Baydhaba") ,
+  df_prmn %>% 
+  filter(
+   previous_departure_district== "Baidoa"
+  ) %>% 
+     group_by(yr_mo) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals,na.rm=T)
+  ) ,
+  by = c("date"="yr_mo")
+  )
 
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, number_of_individuals, value
+  ) %>% 
+  pivot_longer(number_of_individuals:value,
+               names_to = "variable",
+               values_to = "value") %>% 
+  ggplot(aes(x= date, y= value, fill= variable, group= variable, color = variable))+
+  geom_point()+
+  geom_line()
+
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, number_of_individuals, value
+  ) %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+    )+
+  geom_point()+
+  geom_line()+
+   geom_vline(
+     data = . %>% 
+       filter(!is.na(number_of_individuals)),
+    aes(xintercept = date), 
+    color="red",alpha= 0.3
+  )+
+  geom_line(
+    data= df_prmn_baidoa_fs,
+    aes(x= date, y= value/10),
+    color = hdx_hex("mint-hdx")
+  )+
+  scale_y_continuous(
+    # breaks = c(05,25,50,seq(100,1000, 200),2000,3000,9000),
+    sec.axis = sec_axis(~.*10, name = "WorldPop Exposure (thousands)")
+    )+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b%y")+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )+
+  labs(
+    y= "PRMN - Number of Individuals",
+    title= "Baidoa - Displaced vs Flood Exposure",
+    subtitle = "Displaced from PRMN data, flood exposure calculated from Floodscan & Worldpop"
+  )
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, number_of_individuals, value
+  ) %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+    )+
+  geom_point()+
+  geom_line()+
+   geom_vline(
+     data = . %>% 
+       filter(!is.na(number_of_individuals)),
+    aes(xintercept = date), 
+    color="red",alpha= 0.3
+  )+
+  geom_line(
+    data= df_prmn_baidoa_fs,
+    aes(x= date, y= value/10)
+  )+
+  scale_y_continuous(
+    trans = scales::pseudo_log_trans(),
+    breaks = c(05,25,50,seq(100,1000, 200),2000,3000,9000),
+    sec.axis = sec_axis(~.*10, name = "WorldPop Flood Exposure (thousands)")
+    )+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b%y")+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+  
+  
+```
+
+
+```{r}
+library(gghdx)
+gghdx()
+library(gganimate)
+# install.packages("chattr")
+gdf_adm1_fly_yr <- som_adm$adm1 %>% 
+  left_join(
+    df_zonal_fl_pop_yr,
+    by = c("adm1_en"="adm1_en")
+  ) 
+
+# use ggplot2 to create a map using gdf_adm1_fly_yr
+# I want to fill by the `value` column and I want to 
+# annimate with gganimate by the `date` column
+
+
+# this produces : Error: arguments have different crs 
+# devtools::install_github("thomasp85/transformr")
+# animate so that the color of the fill changes value based on date
+# go through all the dates
+# https://github.com/thomasp85/gganimate/issues/479
+
+# create a ggplot object
+p <- gdf_adm1_fly_yr %>% 
+  ggplot() +
+  geom_sf(aes(fill=value)) +
+  scale_fill_viridis_c() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  # transition_states and make each state last 1 second 
+  transition_states(states = date,
+                    # state_length = 2,
+                    wrap = FALSE) +
+  labs(title = "Flooding Exposure - {closest_state}",
+       subtitle = "World Pop + Floodscan",
+       fill = "Population Exposed"
+       )
+
+map_gif <- animate(p, 
+        fps = 2,
+        width = 800,
+        height = 600)
+
+nrow(gdf_adm1_fly_yr)
+nrow(df_zonal_fl_pop_yr)
+# create ggplot line plot that adds a new year of data every time from df_zonal_fl_pop_yr 
+# and animate with gganimate
+
+p_facet_plot <- df_zonal_fl_pop_yr %>% 
+  mutate(
+    date= as_date(date)
+  ) %>% 
+  ggplot(aes(x= date, y = value))+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs()+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.title.x =  element_blank()
+  )+
+  transition_reveal(date)
+
+plot_gif <- animate(p_facet_plot, 
+        fps = 2,
+        width = 800,
+        height = 600)
+
+
+library(magick)
+map_mgif <- image_read(map_gif)
+plot_mgif <- image_read(plot_gif)
+length(map_mgif)
+length(plot_mgif)
+
+
+new_gif <- image_append(c(map_mgif[1], plot_mgif[1]))
+
+for(i in 2:92){
+  print(i)
+  combined <- image_append(c(map_mgif[i], plot_mgif[i]))
+  new_gif <- c(new_gif, combined)
+}
+
+new_gif
+```
+
+```{r}
 ```
 
 
