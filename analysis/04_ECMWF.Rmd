@@ -1,5 +1,5 @@
 ---
-title: "ECMWF"
+title: "ECMWF- Rank Admins by 2024 JFM Rainfall"
 output: html_document
 date: "2023-10-11"
 ---
@@ -8,11 +8,16 @@ date: "2023-10-11"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Intro
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Objective to predict flood/drought risk for 2024 is very difficult due the following factors:
+- El Nino expected to weaken in 2024 so we have little indication of expected rainfall patterns in 2024 especially during Gu (OND).
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+- However something which may prove somewhat insightful is to look at most forward looking ECMWF Seasonal forecast available which extends [FMA2024 published October 2023](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202310010000&stats=ensm&valid_time=202402010000) and compare it to the equivalent forecast made 1 year earlier [FMA 2023 published October 2022](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202210010000&stats=tsum&valid_time=202211010000
+)
+- This does not correspond to the Gu rainfall season (MAM), but is the closest we have and contains some overlap.
+- Acknowledge that this comparison does not give a huge amount of informatio, but at least we will be able to say something about how predictions of early 2023 & 2024 compare.
+- The charts above provide this comparison well and we can see FMA2024 has much more precip than FMA2023. To provide a bit more information I will provide a map showing the rank of JFM 2024** rainfall by admin 1 state in Somalia (**note: see next section to understand why not FMA 2024).
 
 ```{r cars}
 library(tidyverse)
@@ -46,6 +51,17 @@ som_adm <- som_adm_levels %>%
 ```
 
 
+## ECMWF Product discrepancy:
+
+- How does ECMWF produce a forecast for FMA 2024 in October 2023? You can see this in the chart [here](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202310010000&stats=ensm&valid_time=202402010000)
+- This does not line up w/ the data downloaded from the API which latest trimester probability published in October 2023 would be JFM 2024 (lt 4-6). This view is supported by the
+  + [C3s Seasonal Chart with ECMWF Data](https://climate.copernicus.eu/charts/packages/c3s_seasonal/products/c3s_seasonal_spatial_ecmf_rain_3m?area=area08&base_time=202310010000&type=tsum&valid_time=202401010000)
+  + Data available on API and also manually available [here](https://cds.climate.copernicus.eu/cdsapp#!/dataset/seasonal-monthly-single-levels?tab=form)
+  
+  
+## Latest available data
+ 
+Therefore, I downloaded the latest available data (Pub Oct 2023) from API and use leadtimes 4-6 to get the most foreward looking forecast. I also do the same w/ manually downloaded data later to make sure it wasn't a problem w/ my API call.
 
 
 ```{r}
@@ -89,8 +105,6 @@ lr <- fnames %>%
         ),
         crs = "EPSG:4326"
       )
-
-
       dates_predicted <- as_date(as_date("1900-01-01") + hours(t_hours))
       set.names(r, dates_predicted)
       return(r)
@@ -100,9 +114,9 @@ lr <- fnames %>%
 
 ```
 
-# Sum 3 rasters for JFM
+## Sum 3 monthly J,F, M raster for JFM sum rainfall raster
 
-we don't have to worry about units bc we are just going to run a ranking on the values
+Since the plot I create is just a simple rank plot all I neeed to do is sum the 3 rasters - nothing fancy
 
 ```{r}
 r_ecmwf <-  rast(lr)
@@ -110,6 +124,8 @@ r_emwf_sum <- sum(r_ecmwf)
 ```
 
 ## Zonal stats per admin 1
+
+Run the zonal stats on the sum
 
 ```{r}
  df_ecmwf_adm1 <- exact_extract(
@@ -133,7 +149,10 @@ df_ecmwf_adm1_ranked <- df_ecmwf_adm1 %>%
 # join to shapefile
 gdf_adm1_ranked <- som_adm$adm1 %>% 
   left_join(df_ecmwf_adm1_ranked, by = c("adm1_en" = "adm1_en")) 
+```
 
+## JFM 2024 Precip Rank Map Plot
+```{r}
 # map ranks
 gdf_adm1_ranked %>% 
   ggplot()+
@@ -147,7 +166,7 @@ gdf_adm1_ranked %>%
 ```
 
 
-# Quick check manual DL
+# Quick check data manually downloaded
 
 ```{r}
 # get index of manually downloaded file
@@ -165,8 +184,6 @@ fill_value <- ncatt_get(nf, "tprate", "_FillValue")
 # fill array w/ standard NA
 tprate_array[tprate_array == fill_value$value] <- NA
 # tprate_mean_array <- apply(tprate_array, c(1, 2), mean, na.rm = T)
-
-
 
 lon <- ncvar_get(nf, "longitude")
 lat <- ncvar_get(nf, "latitude", verbose = F)
@@ -188,5 +205,6 @@ r_dld <- rast(
 dates_predicted <- as_date(as_datetime("1900-01-01 00:00:00") + hours(t_hours))
 set.names(r, dates_predicted)
 
+# it's the same.
 r_dld      
 ```
