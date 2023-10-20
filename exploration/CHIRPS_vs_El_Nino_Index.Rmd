@@ -1,0 +1,129 @@
+---
+title: "CHIRPS Somalia Vs Global El Nino Index"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(gghdx)
+gghdx()
+
+dir_som_pub_processed <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public","processed",
+  "som")
+
+fp_chirps_adm2 <-  file.path(
+  dir_som_pub_processed,
+  "chirps",
+  "20231010_chirps_monthly_historical_adm2.csv")    
+
+df_chirps <- read_csv(fp_chirps_adm2)
+  
+
+# get El Nino Strength Index
+df_oni <- read.table("https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt",
+                     sep = "",header=T) %>% 
+  clean_names() %>% 
+  tibble()
+```
+
+## Intro
+
+Is there a relation between CHIRPS historical  El Nino Strength Index in Somalia? 
+
+I don't think this analysis will actually be used at all for the Somalia Risk analysis support. A more comprehensive analysis of this sort could have potentially been useful in adjusting risk estimates for 2023 when we knew we were heading into a strong el Nino. However with El Nino predicted to weaken 2024 the utility may be more limited.
+
+
+## CHIRPS vs El Nino Index (ONI)
+
+```{r}
+
+df_chirps_seas_oni <- df_chirps %>% 
+  mutate(
+    seas = case_when(
+      month(date) %in% c(3,4,5)~"MAM",
+      month(date) %in% c(10,11,12)~"OND"
+    )
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(
+    adm1_en,adm1_pcode,adm2_pcode,adm2_en,
+    year = floor_date(date, "year"),
+    yr = year(year),
+    seas
+  ) %>% 
+  summarise(
+    value = sum(value)
+  ) %>% 
+  left_join(
+    df_oni, by = c("seas","yr")
+    ) 
+```
+
+## OND Comparison
+
+Let's look at OND over each region (admin 1) in Somalia and see how the historical rainfall roughly correlates with the Global El Nino Index.
+
+
+```{r}
+df_chirps_seas_oni %>% 
+  filter(seas=="OND") %>% 
+  ggplot(aes(x= anom,y= value, group=adm2_en))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  geom_point(size =0.3)+
+  facet_wrap(~adm1_en)+
+  geom_vline(
+    xintercept = 0.5, linetype = "dashed",
+    color = hdx_hex("tomato-hdx")
+  )+
+  labs(
+    y= "Rainfall (mm)",
+        title = "Somalia: CHIRPS Historical - October-November-December (OND) Vs. El Nino Index",
+    subtitle = "Red line indicates predicted El Nino Index for OND 2024",
+    caption = "Highest ONI values to correspond to higher historical rainfalls in OND in many regions, but lower positive anomalies in the range of what is predicted for 2024 show littler correlation"
+  )+
+  theme(
+    axis.text.x= element_text(angle=90),
+    plot.caption = element_text(hjust=0)
+  )
+```
+  
+## MAM Comparison  
+  
+```{r}
+df_chirps_seas_oni %>% 
+  filter(seas=="MAM") %>% 
+  ggplot(aes(x= anom,y= value, group=adm2_en))+
+  # geom_point()+
+  scale_x_binned(breaks = seq(-2,3, 0.25))+
+  geom_point(size =0.3)+
+  facet_wrap(~adm1_en)+
+  geom_vline(
+    xintercept = 1, linetype = "dashed",
+    color = hdx_hex("tomato-hdx")
+  )+
+    labs(
+      y= "Rainfall (mm)",
+    title = "Somalia: CHIRPS Historical - March-April-May (MAM) Vs. El Nino Index",
+    subtitle = "Red line indicates predicted El Nino Index for MAM 2024",
+    caption = "Little correlation between El Nino Index & Historical MAM rainfall"
+    
+  )+
+  theme(
+    axis.text.x= element_text(angle=90),
+    plot.caption = element_text(hjust=0)
+  )
+```

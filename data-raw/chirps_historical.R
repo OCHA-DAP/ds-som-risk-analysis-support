@@ -7,10 +7,10 @@ library(janitor)
 library(sf)
 ee_Initialize()
 
-analysis_level <-  c("adm0","adm1","adm2","bas4")[4]
+analysis_level <- c("adm0", "adm1", "adm2", "bas4")[4]
 
-adm_analysis <- str_detect(analysis_level,"^adm")
-if(adm_analysis){
+adm_analysis <- str_detect(analysis_level, "^adm")
+if (adm_analysis) {
   som_adm0_levels <- c(
     "som_admbnda_adm0_ocha_20230308",
     "som_admbnda_adm1_ocha_20230308",
@@ -30,7 +30,7 @@ if(adm_analysis){
 
   gdf_zone <- som_adm[[analysis_level]]
 }
-if(!adm_analysis){
+if (!adm_analysis) {
   cat("reading bas4\n")
   gdb_basin <- file.path(
     Sys.getenv("AA_DATA_DIR"),
@@ -41,9 +41,8 @@ if(!adm_analysis){
   )
   gdf_zone <- read_sf(gdb_basin, layer = "hybas3_af_lev03_v1c_shabelle_juba") %>%
     rename(
-      geometry= "geom"
+      geometry = "geom"
     )
-
 }
 
 out_dir <- file.path(
@@ -69,7 +68,7 @@ tic_monthly_rainfall <- tic %>%
 
 fc_zone <- sf_as_ee(x = gdf_zone)
 
-cat("begin extraction of zonal stats for ", analysis_level,"\n")
+cat("begin extraction of zonal stats for ", analysis_level, "\n")
 df_rainfall_adm <- ee_extract_tidy(
   x = tic_monthly_rainfall,
   y = fc_zone,
@@ -78,14 +77,14 @@ df_rainfall_adm <- ee_extract_tidy(
   via = "drive"
 )
 
-prefix_date <- format(Sys.Date() ,"%Y%m%d")
+prefix_date <- format(Sys.Date(), "%Y%m%d")
 cat("write zonal sats to csv\n")
 write_csv(
   x = df_rainfall_adm,
   file = file.path(
     out_dir,
     paste0(
-      prefix_date,"_chirps_monthly_historical_",analysis_level,".csv"
+      prefix_date, "_chirps_monthly_historical_", analysis_level, ".csv"
     )
   )
 )
