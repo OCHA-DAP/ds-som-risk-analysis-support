@@ -1,0 +1,272 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+library(tidync)
+library(sf)
+library(rnaturalearth)
+library(tidyverse)
+library(reticulate)
+library(ggridges)
+library(glue)
+library(gghdx)
+library(exactextractr)
+library(tmap)
+library(tidync)
+library(terra)
+library(patchwork)
+library(gt)
+
+fp_iri_base <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "processed",
+  "som",
+  "iri")
+iri_types <- c("dom","prob")
+
+fp_iri <- map(
+    dir(fp_iri_base),\( fp){
+      file.path(fp_iri_base,fp)
+    }
+  ) %>% 
+    set_names(iri_types)
+
+
+iri <- fp_iri %>% 
+  map(~tidync::tidync(.x))
+
+
+# I get errors using `{rhdx}` to try to et CODs for these countries so going w/ natural earth
+aoi_countries <- ne_countries(country = c("Somalia")) %>% 
+  st_as_sf() %>% 
+  select(
+    contains("admin"),
+    iso_a3
+  )
+
+nv_bbox <-  st_bbox(aoi_countries) 
+
+```
+
+
+```{r}
+
+# crop to make size more manageable
+iri_crop <- c(iri) %>% 
+  map(
+    ~.x %>% 
+      hyper_filter(
+    Y = between(Y, nv_bbox[2],nv_bbox[4]),
+    X = between(X, nv_bbox[1],nv_bbox[3])
+  )
+  )
+  
+
+# split up leadtimes
+iri_lt_split <-iri_crop %>% 
+  map(\(iri_type){
+    c(
+    lt1=1,
+    lt2=2,
+    lt3=3,
+    lt4=4
+  ) %>% 
+  map(
+    ~iri_type %>% 
+      hyper_filter(
+        L= L==.x
+      )
+  )
+  })
+iri_lt_split$dom
+
+# convert each leadtime into array
+da_prob <- iri_lt_split$prob %>% 
+  map(
+    ~.x %>% 
+      hyper_array(select_var = "prob")
+  )
+da_dom <- iri_lt_split$dom %>% 
+  map(
+    ~.x %>% 
+      hyper_array(select_var = "dominant")
+  )
+
+
+# extract coordinate arrays to use to align data to grids in raster    
+lon_lat_names <-  c("X","Y")
+
+coord_array<-  lon_lat_names%>% 
+  map(
+  ~ iri_lt_split$prob$lt1   %>% 
+    activate(.x) %>% 
+    hyper_array()
+  ) %>% 
+  set_names(lon_lat_names)
+
+
+r_prob_list <- da_prob %>% 
+  map(
+    \(da){
+      da_reordered <- aperm(da[["prob"]],c(2,1,4,3))
+      c(1:3) %>% 
+        map(\(c_prob){
+          da_c<- da_reordered[,,,c_prob] 
+          rast(
+            x= da_c,
+            extent =ext(
+              min(coord_array$X$X)-.5,
+              max(coord_array$X$X)+.5,
+              min(coord_array$Y$Y)-.5,
+              max(coord_array$Y$Y)+.5
+            ),
+            crs= "EPSG:4326")
+        }
+        )
+    }
+  )
+
+r_dom_lt_split <-  da_dom %>% 
+  map(
+    ~ rast(
+      # aperm allows you to rerrange dimensions into those expected by terra::rast()
+      x= aperm(.x[["dominant"]],c(2,1,3)),
+      extent =ext(
+        min(coord_array$X$X)-.5,
+        max(coord_array$X$X)+.5,
+        min(coord_array$Y$Y)-.5,
+        max(coord_array$Y$Y)+.5
+      ),
+      crs= "EPSG:4326"
+    ) 
+  )
+
+  
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+Starting in April 2017, the IRI probabilistic seasonal climate forecast product is based on
+http://iridl.ldeo.columbia.edu/SOURCES/.IRI/.FD/.NMME_Seasonal_Forecast/.Precipitation_ELR/ (citation for Feb 2017 as start date)
+```{r pressure, echo=FALSE}
+dt_latest_month <- as_date("2023-09-01")
+# dt_earliest_month <- as_date("2023-08-01")-months(78)
+dt_earliest_month <- as_date("2023-09-01")-months(79)
+
+
+
+dt_all_month <- seq(dt_earliest_month,dt_latest_month, by ="month") 
+names(r_dom_lt_split$lt1)
+r_dom_lt_split %>% 
+  map(~names(.x) %>% 
+        length())
+
+# odd mutability behaviour for R... but I don't really mind
+r_dom_lt_split %>% 
+  map(
+    ~set.names(.x,dt_all_month)
+  )
+```
+
+```{r}
+
+# I was thinking here that we could look at OND across all leadtimes
+# and take the max, but max doesn't really make sense if some pixels are bavg and some are 
+# aavg
+
+start_month_of_interest <- 10 # OND
+
+r_dom_renamed <- r_dom_lt_split %>% 
+  map2(1:length(r_dom_lt_split),
+       \(r,mo_lead){
+         # target_pub_month <- start_mo_of_interst-mo_subtract
+         pub_mo <- r %>% 
+           names()
+         pred_mo <- as_date(pub_mo) + months(mo_lead)
+         r %>% 
+           set.names(pred_mo)
+         return(r)
+         
+       }
+    
+  )
+r_dom_renamed %>% 
+  map(
+    \(r){
+      r_names <- r %>% 
+        names()
+      r_target_names <- r_names[month(r_names)==start_month_of_interest]
+      return(r[[r_target_names]])
+      
+    }
+  )
+
+```
+
+
+```{r}
+# palette taken from burkina repo
+plt_levels = c(-100, -70, -60, -50, -45, -40, 40, 45, 50, 60, 70, 100)
+plt_colors = c(
+    "#783200",
+    "#ab461e",
+    "#d18132",
+    "#e8b832",
+    "#fafa02",
+    "#ffffff",
+    "#d1f8cc",
+    "#acf8a0",
+    "#73bb6e",
+    "#3a82b3",
+    "#0e3bf4"
+)
+
+
+
+plot(aoi_countries,add=T,fill=NA)
+tm_shape(r_dom_lt_split$lt1[["2023-08-01"]] )+
+  tm_raster(palette = plt_colors,breaks = plt_levels)+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()
+
+tm_shape(r_dom_lt_split$lt1[["2022-08-01"]] )+
+  tm_raster(palette = plt_colors,breaks = plt_levels)+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()
+r_dom_lt_split$lt1[[c("2021-08-01","2022-08-01")]]
+
+tm_shape(r_dom_lt_split$lt1[[c("2018-08-01","2019-08-01","2020-08-01","2021-08-01","2022-08-01","2023-08-01")]] )+
+  tm_raster(
+    palette = plt_colors,breaks = plt_levels,title = "OND (LT1) Dominant Tercile\nPast 6 years"
+    # legend.is.portrait = F
+    )+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()+
+  tm_layout(
+    # legend.outside.position = "bottom",
+            legend.outside.size = 0.35,
+            legend.outside = TRUE)+
+  tm_facets()
+
+```
