@@ -1,11 +1,23 @@
 ---
 title: "ECMWF- Rank Admins by 2024 JFM Rainfall"
-output: html_document
-date: "2023-10-11"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-24"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "hide",
+  out.width= "100%"
+)
 ```
 
 ## Intro
@@ -19,10 +31,16 @@ Objective to predict flood/drought risk for 2024 is very difficult due the follo
 - Acknowledge that this comparison does not give a huge amount of informatio, but at least we will be able to say something about how predictions of early 2023 & 2024 compare.
 - The charts above provide this comparison well and we can see FMA2024 has much more precip than FMA2023. To provide a bit more information I will provide a map showing the rank of JFM 2024** rainfall by admin 1 state in Somalia (**note: see next section to understand why not FMA 2024).
 
-```{r cars}
+```{r libsData}
 library(tidyverse)
 library(ncdf4)
 library(terra)
+library(rhdx)
+library(janitor)
+library(exactextractr)
+library(gghdx)
+gghdx()
+
 fp_seas51 <- file.path(
   Sys.getenv("AA_DATA_DIR"),
   "private",
@@ -65,7 +83,6 @@ Therefore, I downloaded the latest available data (Pub Oct 2023) from API and us
 
 
 ```{r}
-
 # I later manually downloaded the files from the ECMWF website to double check
 # therefore, I have to filter out the manually downloaded files first
 idx_manually_downloaded_fp <- str_detect(dir(fp_seas51),"manual")
@@ -152,13 +169,14 @@ gdf_adm1_ranked <- som_adm$adm1 %>%
 ```
 
 ## JFM 2024 Precip Rank Map Plot
-```{r}
+```{r map-ECMWFrankJFM2024, results="asis"}
 # map ranks
 gdf_adm1_ranked %>% 
   ggplot()+
   geom_sf(
     aes(fill=as.ordered(rank))
   )+
+  theme_void()+
   theme(
     legend.title = element_blank()
   )
@@ -166,9 +184,9 @@ gdf_adm1_ranked %>%
 ```
 
 
+```{r eval=F,checkManuallyDownloaded}
 # Quick check data manually downloaded
 
-```{r}
 # get index of manually downloaded file
 manual_file <- dir(fp_seas51)[idx_manually_downloaded_fp]
 fp_manual_dl <- file.path(fp_seas51,manual_file)
@@ -203,7 +221,7 @@ r_dld <- rast(
 
 
 dates_predicted <- as_date(as_datetime("1900-01-01 00:00:00") + hours(t_hours))
-set.names(r, dates_predicted)
+set.names(r_dld, dates_predicted)
 
 # it's the same.
 r_dld      

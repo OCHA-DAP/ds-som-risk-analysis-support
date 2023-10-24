@@ -464,7 +464,7 @@ df_fs_prmn <- df_adm1_mo_pop_exposed_anom %>%
   ) 
 ```
 
-```{r plot-FloodScanVsPrmn, results="asis"}
+```{r plot-FloodScanVsPrmn, fig.height=9, results="asis"}
 df_fs_prmn %>% 
   ggplot(aes(x= value, y= number_of_individuals))+
   geom_point(size=0.7)+
