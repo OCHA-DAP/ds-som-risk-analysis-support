@@ -1,0 +1,695 @@
+---
+title: "Explore PRMN Data"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "asis",
+  out.width= "100%"
+)
+```
+
+# Intro
+
+This document represents light analysis of available public PRMN flood displacement data in Somalia. Plots currently shared in slides are marked with <span style="color:#18998F;">asterisked green colored sections**</span>
+
+```{r libsData}
+
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(gghdx)
+library(patchwork)
+library(rhdx)
+library(sf)
+library(gt)
+library(ggfx) # only in appendix
+library(ggrepel) # only in appendix
+gghdx()
+
+som_adm0_levels <- c(
+  "som_admbnda_adm0_ocha_20230308",
+  "som_admbnda_adm1_ocha_20230308",
+  "som_admbnda_adm2_ocha_20230308"
+)
+
+som_adm <- som_adm0_levels %>%
+  map(
+    ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
+      pluck(1) %>%
+      get_resource(2) %>%
+      read_resource(layer = .x) %>%
+      clean_names() %>%
+      select(matches("^adm\\d_"))
+  ) %>%
+  set_names(c("adm0", "adm1", "adm2"))
+
+
+
+dir_som_pub_raw <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "raw",
+  "som")
+
+dir_som_pub_processed <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public","processed",
+  "som")
+
+fp_chirps_adm2 <-  file.path(
+  dir_som_pub_processed,
+  "chirps",
+  "20231010_chirps_monthly_historical_adm2.csv")    
+
+fp_prmn <- file.path(dir_som_pub_raw,
+          "prmn",
+          "UNHCR-PRMN-Displacement-Dataset.xlsx"
+          )
+
+df_prmn <- read_xlsx(fp_prmn) %>% 
+  clean_names()
+
+df_chirps <- read_csv(fp_chirps_adm2)
+  
+
+# get El Nino Strength Index
+df_oni <- read.table("https://www.cpc.ncep.noaa.gov/data/indices/oni.ascii.txt",
+                     sep = "",header=T) %>% 
+  clean_names() %>% 
+  tibble()
+
+```
+
+
+```{r  results="hide"}
+# filter just flood displacement
+df_flood <-  df_prmn %>% 
+  filter(reason=="Flood") %>% 
+  mutate(
+    date= dmy(month_end),
+    yr_mo = floor_date(date, "month"),
+    .before= everything()
+  )
+
+df_flood %>% 
+  count(previous_departure_district) 
+
+df_flood %>% 
+  count(previous_departure_region)
+  
+```
+
+# Reclassify admins 
+
+2023 HNO Flood risk analysis groups admin 1s into 6 groupings:
+
+1. Galmadug
+2. Hirashabelle
+3. Jubaland
+4. Puntland
+5. South West State
+6. Somaliland
+7. Banadir** - not mentioned in HNO 2023 flood risk analysis table - kept separate.
+
+```{r reclassifyAdmins}
+# 2023 uses groups admin 1s into :
+# Galmadug, Hiragshabelle, Jubaland, Puntland, South West State, Somaliland 
+gdf_adm1 <- som_adm$adm1 %>%
+  mutate(
+    hno_flood_class = case_when(
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+      adm1_en %in% c("Middle Shabelle", "Hiraan") ~ "Hirshabelle",
+      adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
+      adm1_en %in% c("Bari","Nugaal") ~ "Puntland",
+      adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
+      adm1_en %in% c("Awdal", 
+                     "Woqooyi Galbeed",
+                     "Jeeh",
+                     "Togdheer", 
+                     "Sanaag",
+                     "Sool")~ "Somaliland",
+      .default = adm1_en
+    )
+  )
+```
+
+
+# Historical - Time Series - Flood Displacement
+
+## By region (admin 1)
+
+We see some extremely high displacement in Hiraan - this data should be looked at further by contextual experts.
+
+```{r fig.height=7}
+df_flood %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point(size= 0.5)+
+  geom_line(alpha=0.5)+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "Historical Flood Dispalcement",
+    subtitle = "Hiraan values look like outliers - should be inspected futher",
+    y= "Number of displaced individuals",
+    caption = "Data: UNHCR PRMN"
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+```
+
+Same plot, but w/ Hiiran removed
+```{r}
+df_flood %>% 
+  filter(previous_departure_region!="Hiraan") %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point()+
+  geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "Historical Flood Dispalcement",
+    subtitle = "Hiraan region removed for visual",
+    y= "Number of displaced individuals",
+    caption = "Data: UNHCR PRMN"
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+```
+
+```{r, fig.height=7}
+df_flood %>% 
+  group_by(date= yr_mo,previous_departure_region) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals),
+    .groups="drop"
+  ) %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+  )+
+  geom_point(size=0.5)+
+  geom_line(alpha=0.5)+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(
+    labels = scales::label_comma(),
+                     trans=scales::pseudo_log_trans(),
+    breaks= c(1,10,100,1000,10000,50000,100000,1000000)
+    )+
+  labs(
+    title = "Historical Flood Dispalcement",
+    subtitle = "Pseudolog scale",
+    y= "Number of displaced individuals per month",
+    caption = "Data: UNHCR PRMN"
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+```
+
+
+# Monthly/Seasonal Flood Displacement
+
+Below we see flood displacements per month. The two rainy season Gu & Deyr are indicated by the vertical red rectangle in the background.
+
+```{r}
+df_rect_seas <- 
+  tibble(start = c("Mar","Oct"),
+         end= c("Jun","Dec"))
+
+
+df_flood %>% 
+  group_by(
+    mo= month(date,label=T), 
+    previous_departure_region
+    ) %>%
+  summarise(
+    number_of_individuals = sum(number_of_individuals),
+    .groups = "drop"
+    ) %>%
+  filter(previous_departure_region!="Hiraan") %>%
+  ggplot(
+  )+
+  geom_bar(
+    aes(x= mo, y= number_of_individuals),
+    stat="identity"
+    )+
+    geom_rect(
+    data= df_rect_seas,
+      aes(
+      xmin = start,
+      xmax = end,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.15,
+    fill = hdx_hex("tomato-hdx")
+  )+
+  # geom_line()+
+  facet_wrap(~previous_departure_region)+
+  scale_y_continuous(labels = scales::label_comma())+
+  labs(
+    title = "PRMN: Displacement Fromm Flooding",
+    y= "Number of displaced individuals",
+    subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red"
+    
+  )+
+  theme(
+    panel.background = element_rect(color="grey",fill=NA),
+    axis.text.x = element_text(angle=90),
+    axis.title.x = element_blank()
+  )
+```
+
+Lets organize these somewhat geographically. As northern regions have a different climate pattern than southern regions
+
+```{r}
+# want to organize. N-S so let's loop through HNO groups
+state_names <- gdf_adm1 %>% 
+  pull(hno_flood_class) %>% 
+  unique()  
+
+p_prmn_bar_by_state <- map(
+    set_names(state_names),
+    \(state_name){
+      gdf_tmp <- gdf_adm1 %>% 
+        filter(hno_flood_class==state_name) 
+      
+      x_txt_size = ifelse(state_name=="Somaliland",8,11)
+      df_flood %>% 
+        group_by(
+          mo= month(date,label=T), 
+          previous_departure_region
+        ) %>%
+        summarise(
+          number_of_individuals = sum(number_of_individuals),
+          .groups = "drop"
+          ) %>%
+        filter(previous_departure_region %in% gdf_tmp$adm1_en) %>%
+        complete(mo,previous_departure_region) %>% 
+        # filter(previous_departure_region!="Hiraan") %>%
+        ggplot(
+        )+
+        geom_bar(
+          aes(x= mo, y= number_of_individuals),
+          stat="identity"
+        )+
+        geom_rect(
+          data= df_rect_seas,
+          aes(
+            xmin = start,
+            xmax = end,
+            ymin = -Inf,
+            ymax = Inf
+          ),
+          alpha = 0.15,
+          fill = hdx_hex("tomato-hdx")
+        )+
+        facet_wrap(~previous_departure_region)+
+        scale_y_continuous(labels = scales::label_comma())+
+        labs(
+          subtitle = state_name
+          
+          
+        )+
+        theme(
+          panel.background = element_rect(color="grey",fill=NA),
+          axis.text.x = element_text(angle=90,size = x_txt_size),
+          axis.title.y = element_blank(),
+          axis.title.x =   element_blank()
+        )
+    }
+    
+  )
+
+```
+
+## <span style="color:#18998F;">Flood Dispalcement -Northen Regions**</span>
+
+```{r out.width="100%" ,fig.width=7,fig.height = 7}
+p_prmn_bar_by_state$Somaliland+
+  p_prmn_bar_by_state$Puntland+
+    plot_layout(ncol = 2,
+                widths = c(1,1),
+                heights = c(),
+                guides = "collect")+
+  plot_annotation(title = "PRMN: Displacement From Flooding (Northern regions)",
+                  subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red",
+                  caption = "Source: PRMN"
+  )
+```
+
+## <span style="color:#18998F;">Flood Dispalcement -Southern Regions**</span>
+```{r, fig.height=9}
+  p_prmn_bar_by_state$Galmadug+
+  p_prmn_bar_by_state$Hirshabelle+
+  p_prmn_bar_by_state$`South West State`+
+  p_prmn_bar_by_state$Banadir+
+  p_prmn_bar_by_state$Jubaland+
+  plot_layout(ncol = 2,widths = c(),heights = c())+
+  plot_annotation(title = "PRMN: Displacement From Flooding (Southern regions)",
+                  subtitle = "Gu (MAMJ) and Deyr (OND) seasons highlighted in red",
+                  caption = "Source: PRMN"
+                  # theme = theme(plot.title = element_text(hjust = 0.5))
+  )
+    
+
+```
+
+# Appendix - More Exporatory
+
+## Top 20 districts by displacement
+
+look at top 20 districts by displacement. 
+
+```{r, results= "hide"}
+
+top_20_districts <- df_flood %>% 
+  group_by(across(matches("departure_"))) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals),
+    .groups="drop"
+  ) %>% 
+  slice_max(n=20, order_by = number_of_individuals) 
+
+top_20_districts %>% 
+  filter(!previous_departure_district%in% df_chirps$adm2_en)
+
+df_chirps %>% 
+  filter(!adm2_en%in% df_flood$previous_departure_district) %>% 
+  distinct(adm1_en,adm2_en)
+df_chirps %>% 
+  filter(!adm1_en%in% df_flood$previous_departure_region) 
+
+all(top_20_districts$previous_departure_district %in% df_chirps$adm2_en)
+
+# in adm chirs
+
+```
+
+```{r}
+top_20_districts %>% 
+  gt() %>% 
+  gt::fmt_number(
+    columns = c("number_of_individuals"),
+    decimals = 0,
+    sep=","
+  ) 
+```
+
+## Rainfall anomaly vs PRMN
+
+Plotting chirps rainfall anomaly against rainfall anomaly -- a bit messy, but interesting representation of the data. I think out of scope to dig much further.
+
+```{r}
+
+df_flood_top20 <- df_flood %>% 
+  inner_join(
+    top_20_districts %>% 
+      select(-number_of_individuals),
+    by = c("previous_departure_region", 
+           "previous_departure_district")
+
+  ) %>% 
+  select(-contains("arrival")) %>% 
+  mutate(
+    adm2_en =case_when(
+      previous_departure_district == "Baidoa"~"Baydhaba",
+      .default = previous_departure_district
+              ),
+    yr_mo = floor_date(date, "month")
+  ) %>%
+  group_by(across(matches("_departure_")),adm2_en, yr_mo) %>% 
+  summarise(
+    number_of_individual = sum(number_of_individuals),.groups="drop"
+  )
+
+
+df_chirps <- df_chirps %>% 
+  group_by(
+    across(matches("adm\\d_[pe]")),
+    mo = month(date)
+  ) %>% 
+  mutate(
+    across(value, ~ (. - mean(.)),.names = "anom_diff")
+  ) %>% 
+  ungroup()
+
+
+df_chirps_prmn <- df_chirps %>% 
+  filter(
+    date >= as_date("2016-01-01"),
+    adm2_en %in% df_flood_top20$adm2_en
+  ) %>% 
+  left_join(
+    df_flood_top20,
+    by =c("adm2_en"="adm2_en","date"="yr_mo")
+  ) %>% 
+  select(date,matches("^adm\\d_[ep]"),number_of_individual, rainfall=value,anom_diff) %>% 
+  mutate(
+    # number_of_individual = replace_na(number_of_individual,0),
+  ) 
+  
+ df_chirps_prmn %>% 
+  ggplot(
+  )+
+  geom_point(aes(x= date, y= anom_diff),size=0.4)+
+  geom_line(aes(x= date, y= anom_diff),alpha= 0.3, lwd=0.5)+
+   geom_point(
+     aes(x= date, y= number_of_individual/1000),
+     color="red",
+     size= 1.5,
+     alpha= 0.3
+   )+
+  scale_y_continuous(
+    name = "Monthly Rainfall Anomaly (mm)",
+    sec.axis = sec_axis(
+      trans = ~ . * 1000, name = "Impacted",
+      labels=scales::label_comma()
+      ),
+    labels=scales::label_comma()
+    ) +
+   scale_x_date(
+     date_breaks = "1 year",
+     date_labels = "%Y"
+   )+
+   labs(
+     title = "Rainfall Anomaly vs Displacement",
+     subtitle = "Top 20 Districts with most flood related displacement (PRMN)"
+   )+
+   facet_wrap(
+     ~adm2_en,
+     scales="free_y"
+   )+
+   theme(
+     axis.text.x = element_text(angle = 90),
+     strip.text = element_text(size=5),
+     axis.title.x= element_blank(),
+     axis.title.y = element_text(size=7),
+     axis.text = element_text(size=5)
+   )
+```
+
+
+## Imapct Ranges PRMN
+
+What about just getting historical range per district
+
+```{r}
+df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr= year(yr_mo), previous_departure_region) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+  ) %>% 
+  ungroup() %>% 
+  
+  tidyr::complete(
+    previous_departure_region,yr,seas,
+    fill= list(number_of_individuals=0)
+  ) %>% 
+ ggplot(
+    aes(x= reorder(previous_departure_region,number_of_individuals),
+        y= number_of_individuals)
+  )+
+  # geom_boxplot()+
+  geom_point(alpha =0.3)+
+  scale_y_continuous(trans = scales::pseudo_log_trans(),
+                     labels=scales::label_comma(),
+                     breaks = c(0,25,50,100,200,1000,10000, 50000)
+                     )+
+  labs(
+    y= "Number Individuals"
+  )+
+  coord_flip()+
+  facet_wrap(~seas,nrow=2)+
+  labs(
+    title = "Range in number displaced",
+    subtitle= "PRMN (2016-2023)"
+  )+
+  theme(
+    axis.title.y  = element_blank()
+  )
+  
+
+
+```
+
+```{r, results="hide"}
+df_flood_displaced_adm1_seas <- df_flood %>%
+  mutate(
+    seas = case_when(
+      month(yr_mo) %in% c(3,4,5)~"MAM",
+      month(yr_mo) %in% c(10,11,12)~"OND",
+      .default= NA
+    ) 
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(seas,yr= year(yr_mo), previous_departure_region) %>% 
+  summarise(
+    number_of_individuals = sum(number_of_individuals)
+  ) 
+
+
+df_flood_displaced_adm1_seas_complete <- df_flood_displaced_adm1_seas %>% 
+  ungroup() %>% 
+  # group_by(seas, yr) %>% 
+  tidyr::complete(
+    previous_departure_region,yr,seas,
+    fill= list(number_of_individuals=0)
+  ) 
+
+df_flood_seas_summary <- df_flood_displaced_adm1_seas_complete %>% 
+  group_by(previous_departure_region,seas) %>% 
+  summarise(
+    median = median(number_of_individuals),
+    min = min(number_of_individuals),
+    max = max(number_of_individuals),
+    n=n()
+  )
+
+df_flood_seas_summary %>% 
+  filter(!previous_departure_region%in% som_adm$adm1$adm1_en)
+
+
+df_flood_displaced_adm1_seas %>% 
+  group_by(previous_departure_region,seas) %>% 
+  summarise(
+    median = median(number_of_individuals),
+    min = min(number_of_individuals),
+    max = max(number_of_individuals),
+    n=n()
+  )
+  
+```
+
+
+## Map Median Displacement
+
+These are definitely not super useful, but leaving for now to show what has been tried.
+```{r}
+
+som_adm1_w_prmn <- som_adm$adm1 %>% 
+  left_join(
+    df_flood_seas_summary ,
+    by = c("adm1_en"="previous_departure_region")
+  ) %>% 
+  mutate(
+    adm_label = paste0(adm1_en,
+                       ":\n",
+                       "median:",
+                       median,"\nmax: ",max),
+       CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1),
+    COORDS_Y = map_dbl(COORDS, 2)
+  )
+
+l_som_adm1_w_prmn<- som_adm1_w_prmn %>% 
+  split(.$seas)
+```
+
+
+```{r MapMedianMAM,fig.height=8, fig.align="center"}
+ggplot()+
+  geom_sf(
+    data = l_som_adm1_w_prmn$MAM ,
+    alpha = 1,
+    aes(fill = median)
+  ) +
+  scale_fill_continuous(
+    trans = scales:::pseudo_log_trans()
+    )+
+  geom_text_repel(
+    data= l_som_adm1_w_prmn$MAM,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm_label
+    ),
+     size= 3
+  )+
+  labs(
+    title ="MAM - Flood Displacement",
+    subtitle = "Colored by median displacement (max displacement provided in admin label)"
+  )+
+  theme_void()
+
+```
+
+```{r MapMedianOND,fig.height=8, fig.align="center"}
+ggplot()+
+  geom_sf(
+    data = l_som_adm1_w_prmn$OND ,
+    alpha = 1,
+    aes(fill = median)
+  ) +
+  scale_fill_continuous(
+    trans = scales:::pseudo_log_trans()
+    )+
+  geom_text_repel(
+    data= l_som_adm1_w_prmn$OND,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm_label
+    ),
+     size= 3
+  )+
+    labs(
+    title ="OND - Flood Displacement",
+    subtitle = "Colored by median displacement (max displacement provided in admin label)"
+  )+
+  theme_void()
+    
+```
+

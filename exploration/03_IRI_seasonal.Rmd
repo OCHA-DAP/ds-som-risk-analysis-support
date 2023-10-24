@@ -1,0 +1,205 @@
+---
+title: "IRI Exploration"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "asis",
+  out.width= "100%"
+)
+```
+
+## Intro
+
+A quick look at what IRI might have to offer this research. The FMA (LT 4) & OND (LT 1) are currently in our [brainstorming slide deck](https://docs.google.com/presentation/d/1LuMEILKzSp8Ujp355fItPXC1skFoOalAIhPpJPHWglc/edit#slide=id.g2456d9f415a_0_102)
+
+**Key takeaways**
+
+- IRI indicates a very wet 2023 OND seasons
+- At time of writing (24 Oct 2023), the longest range (most forward looking) forecast IRI has available IRI indicates is FMA 2024 (lead time 4). This lead time shows some above average rainfall in the southern part of the country with neutral conditions elsewhere.
+
+```{r libsData}
+library(tidync)
+library(sf)
+library(rnaturalearth)
+library(tidyverse)
+library(reticulate)
+library(ggridges)
+library(glue)
+library(gghdx)
+library(exactextractr)
+library(tmap)
+library(tidync)
+library(terra)
+library(patchwork)
+library(gt)
+library(targets)
+library(tidync)
+tar_source()
+
+fp_iri_base <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "processed",
+  "som",
+  "iri")
+
+
+iri_types <- c("dom","prob")
+
+fp_iri <- map(
+    dir(fp_iri_base),\( fp){
+      file.path(fp_iri_base,fp)
+    }
+  ) %>% 
+    set_names(iri_types)
+
+
+
+tnc_iri <-map(
+  set_names(fp_iri,iri_types),
+  ~tidync::tidync(.x)
+  )
+
+lr_iri_prob <- iri_nc_to_r(
+  tnc_iri$prob,
+  "prob"
+  )
+
+lr_iri_dom <- iri_nc_to_r(
+  tnc_object  = tnc_iri$dom ,
+  type="dominant"
+  )
+
+
+# for mapping
+aoi_countries <- ne_countries(country = c("Nicaragua",
+                                          "Honduras",
+                                          "Guatemala",
+                                          "El Salvador")) %>% 
+  st_as_sf() %>% 
+  select(
+    contains("admin"),
+    iso_a3
+  )
+
+```
+
+
+
+```{r}
+# convert dates to predicted dates
+lr_iri_dom_pred <- lr_iri_dom %>% 
+  map2(1:length(lr_iri_dom),
+       \(r,mo_lead){
+         pub_mo <- r %>% 
+           names()
+         pred_mo <- as_date(pub_mo) + months(mo_lead)
+         r_copy <- deepcopy(r) # important
+         r_copy %>% 
+           set.names(pred_mo)
+         return(r_copy)
+         
+       }
+    
+  )
+```
+
+
+```{r}
+# palette taken from burkina repo
+plt_levels = c(-100, -70, -60, -50, -45, -40, 40, 45, 50, 60, 70, 100)
+plt_colors = c(
+    "#783200",
+    "#ab461e",
+    "#d18132",
+    "#e8b832",
+    "#fafa02",
+    # "#ffffff", # white
+    "#fffff2", # going with `off-white` for middle so we can tell its not missing pixels
+    "#d1f8cc",
+    "#acf8a0",
+    "#73bb6e",
+    "#3a82b3",
+    "#0e3bf4"
+)
+```
+
+## OND Dominant Tercile
+
+- OND corresponds largely  to Deyr rainfall in Somalia. 
+- We use leadtime 1 for visualization purposes and with the assumption that leadtime 1 is the most accurate leadtime (1-4). We can see quite qet conditions for "current" 2023 OND season particularly in the south. 
+- **takeaway**: likely to be a very wet and flood-prone OND season this year
+
+```{r}
+tm_shape(lr_iri_dom_pred$lt1[[month(names(lr_iri_dom_pred$lt1))==10]] )+
+  tm_raster(
+    palette = plt_colors,breaks = plt_levels,title = "OND (LT1) Dominant Tercile\nPast 6 years"
+    # legend.is.portrait = F
+    )+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()+
+  tm_layout(
+    # legend.outside.position = "bottom",
+            legend.outside.size = 0.35,
+            legend.outside = TRUE)+
+  tm_facets()
+```
+
+
+## MAM Dominant tercile
+
+- Unfortunately we do not have the forecast for upcoming MAM 2024 at the time of writing
+
+```{r}
+tm_shape(lr_iri_dom_pred$lt1[[month(names(lr_iri_dom_pred$lt1))==3]] )+
+  tm_raster(
+    palette = plt_colors,breaks = plt_levels,title = "MAM (LT1) Dominant Tercile\nPast 6 years"
+    # legend.is.portrait = F
+    )+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()+
+  tm_layout(
+    # legend.outside.position = "bottom",
+            legend.outside.size = 0.35,
+            legend.outside = TRUE)+
+  tm_facets()
+```
+
+## FMA Dominant Tercile
+
+- With lead time = 4 we can see a visualizatio of how FMA 2024 compares to previous LT4 FMA forecasts
+- We see above average precipitation in the south of the country and mainly neutral conditions predicted elsewhere
+```{r}
+tm_shape(lr_iri_dom_pred$lt4[[month(names(lr_iri_dom_pred$lt4))==2]] )+
+  tm_raster(
+    palette = plt_colors,breaks = plt_levels,title = "FMA (LT4) Dominant Tercile\nPast 6 years & 2024"
+    # legend.is.portrait = F
+    )+
+  tm_shape(
+    aoi_countries
+  )+
+  tm_borders()+
+  tm_layout(
+    # legend.outside.position = "bottom",
+            legend.outside.size = 0.35,
+            legend.outside = TRUE)+
+  tm_facets()
+```
+
+

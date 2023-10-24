@@ -1,20 +1,30 @@
 ---
-title: "floodscan"
-output: html_document
-date: "2023-10-10"
+title: "Floodscan Explore"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-24"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "hide",
+  out.width= "100%"
+)
 ```
 
-## R Markdown
+# Intro
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is the start of an analysis looking at the utility of FloodScan for this research. This analysis is largely **incomplete** and most likely out of scope of project goals so will put on pause.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
+```{r libsData}
 library(tidyverse)
 library(sf)
 library(tidync)
@@ -24,7 +34,15 @@ library(janitor)
 library(terra)
 library(glue)
 library(exactextractr)
-source("R/utils_floodscan.R")
+library(here)
+library(gghdx)
+# these are for appendix
+library(readxl) # read in prmn
+library(gganimate)
+library(magick)
+source(here("R/utils_floodscan.R"))
+gghdx()
+
 som_adm0_levels <- c(
   "som_admbnda_adm0_ocha_20230308",
   "som_admbnda_adm1_ocha_20230308",
@@ -73,7 +91,8 @@ r_wp <-  rast(fp_wp)
 
 ```
 
-```{r}
+```{r dfElNino}
+# this is just for qual visuals
 # El Nino year - Just from Wikipedia for a first glance
 df_el_nino_years <- tibble(
   date = 
@@ -100,8 +119,16 @@ df_el_nino_years <- df_el_nino_years %>%
   )
 ```
 
+# Population Exposed to Flooding (FloodScan + World Pop)
 
-```{r}
+Population exposed to flooding is derived by combining FloodScan and World Pop in the following process:
+
+1. Calculate maximum flood scan fraction per a. month and, b. year at the pixel level (max composites)
+
+```{r calcFSMaxComposites}
+# This chunk calculates maximum floodscan fraction per month and year
+
+# make a lookup table to be used for raster manipulations
 fs_mos<- floor_date(as_date(names(r_fs)),"month")
 
 fs_lookup <- tibble(
@@ -112,7 +139,7 @@ fs_lookup <- tibble(
     fs_yr = floor_date(fs_name,"year")
   ) 
 
-
+# calculate max floodscan fraction per month (pixel level)
 lr_monthly_max <- unique(fs_lookup$fs_mo) %>% 
   map(
     \(mo_tmp){
@@ -126,8 +153,10 @@ lr_monthly_max <- unique(fs_lookup$fs_mo) %>%
       return(r_max)
     }
   )
+# convert list of max rasters back to raster stack
 r_fs_monthly_max <-  rast(lr_monthly_max)
 
+# do the same, but this time per year
 lr_yearly_max <- unique(fs_lookup$fs_yr) %>% 
   map(
     \(yr_tmp){
@@ -141,12 +170,19 @@ lr_yearly_max <- unique(fs_lookup$fs_yr) %>%
       return(r_max)
     }
   )
-r_fs_monthly_max <-  rast(lr_monthly_max)
+
 r_fs_yearly_max <-  rast(lr_yearly_max)
+```
 
+2. Align and resample FloodScan max composites to World Pop raster
 
-r_fs_monthly_max_crop<- crop(r_fs_monthly_max, r_wp)
-r_fs_yearly_max_crop<- crop(r_fs_yearly_max, r_wp)
+```{r preProcessFloodScan}
+#' Process max composites so they can be combined w/ world pop raster
+#' Set extents & resample
+
+# set extents to be equal
+r_fs_monthly_max_crop <- crop(r_fs_monthly_max, r_wp)
+r_fs_yearly_max_crop <- crop(r_fs_yearly_max, r_wp)
 ext(r_fs_monthly_max_crop) <- ext(r_wp)
 ext(r_fs_yearly_max_crop) <- ext(r_wp)
 
@@ -160,17 +196,19 @@ r_fs_yearly_resampled <- terra::resample(x = r_fs_yearly_max_crop,r_wp)
 
 ```
 
-multiply world pop and fs
-```{r}
+3. Multiply resampled FloodScan max composites by World Pop population estimate raster. From this we have a new rasters representing the population exposed per month/year.
+```{r multFloodScanWorldPop}
+#' Multiply resampled floodscan and world pop data
 r_fs_mo_wp<- r_fs_monthly_resampled * r_wp
 r_fs_yr_wp<- r_fs_yearly_resampled * r_wp
 ```
 
-# zonal stats flood scan
-```{r}
+4. From the new rasters we can simply run zonal sums per admin zone of interest. Here we do it mainly by admin 1.
 
-rt <- rast("/Users/zackarno/Downloads/SOM_ppp_2020_adj_v2.tif")
-df_zonal_fl_pop<- exact_extract(x = r_fs_mo_wp,
+```{r calcZonalStats}
+
+# Monthly Pop Exposed Per Admin 1
+df_adm1_mo_pop_exposed<- exact_extract(x = r_fs_mo_wp,
                                 y = som_adm$adm1, 
                                 fun ="sum",
                                 append_cols= c("adm1_en","adm1_pcode")
@@ -178,8 +216,13 @@ df_zonal_fl_pop<- exact_extract(x = r_fs_mo_wp,
   pivot_longer(-matches("adm")) %>%
   separate(name,
            into = c("stat", "date"),
-           sep = "\\.")
-df_adm2_fl_pop<- exact_extract(x = r_fs_mo_wp,
+           sep = "\\.") %>% 
+  mutate(
+    date= as_date(date)
+  )
+
+# Monthly Pop Exposed per Admin 2
+df_adm2_mo_pop_exposed<- exact_extract(x = r_fs_mo_wp,
                                 y = som_adm$adm2, 
                                 fun ="sum",
                                 append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode")
@@ -187,63 +230,72 @@ df_adm2_fl_pop<- exact_extract(x = r_fs_mo_wp,
   pivot_longer(-matches("adm")) %>%
   separate(name,
            into = c("stat", "date"),
-           sep = "\\.")
-
-# yearly max zonal
-df_zonal_fl_pop_yr<- exact_extract(x = r_fs_yr_wp,
-                                y = som_adm$adm1, 
-                                fun ="sum",
-                                append_cols= c("adm1_en","adm1_pcode")
-                                ) %>% 
-  pivot_longer(-matches("adm")) %>%
-  separate(name,
-           into = c("stat", "date"),
-           sep = "\\.")
-
-
-
-
-df_wp_adm1<- exact_extract(x = r_wp,
-                                y = som_adm$adm1, 
-                                fun ="sum",
-                                append_cols= c("adm1_en","adm1_pcode")
-                                ) %>% 
-  pivot_longer(-matches("adm")) %>%
-  separate(name,
-           into = c("stat", "date"),
-           sep = "\\.")
-
-sum(df_rt_adm1$value)
-sum(df_wp_adm1$value)
-
-df_rt_adm1<- exact_extract(x = rt,
-                                y = som_adm$adm1, 
-                                fun ="sum",
-                                append_cols= c("adm1_en","adm1_pcode")
-                                ) %>% 
-  pivot_longer(-matches("adm")) %>%
-  separate(name,
-           into = c("stat", "date"),
-           sep = "\\.")
-
-df_wp_adm1$value %>% sum()
-
-
-df_zonal_fl_pop <- df_zonal_fl_pop %>% 
+           sep = "\\.")%>% 
   mutate(
-    date=as_date(date)
+    date= as_date(date)
   )
-  
-df_zonal_fl_pop_yr <- df_zonal_fl_pop_yr %>% 
+
+
+# Yearly Pop Exposed per Admin 1
+df_adm1_yr_pop_exposed <- exact_extract(x = r_fs_yr_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.") %>% 
   mutate(
-    date=as_date(date)
+    date= as_date(date)
   )
-  
+
+
+
+# World Pop Adin 1 Stats (Population per admin 1)
+df_adm1_wp<- exact_extract(x = r_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.") %>% 
+  mutate(date=as_date(date))
+
 ```
 
-```{r}
+## Plot Population Exposed per Month
+```{r plot-monthlyExposedAdm1, results= "asis"}
 # Population expose
-df_zonal_fl_pop %>% 
+df_adm1_mo_pop_exposed %>% 
+  ggplot(
+    aes(x= date, y = value, group=adm1_en)
+    )+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs(title = "Monthly population exposed to flooding",
+       y= "Population exposed",
+       caption= "Population: World Pop\nFlood: FloodScan")+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90, size=7),
+    axis.title.x =  element_blank(),
+    plot.caption = element_text(hjust=0 , size=7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+## Plot Population Exposed per year
+
+```{r plot-yearlyExposedAdm1, results="asis"}
+df_adm1_yr_pop_exposed %>% 
   ggplot(aes(x= date, y = value, group=adm1_en))+
   geom_line()+
   scale_y_continuous(labels = scales::label_comma())+
@@ -251,75 +303,32 @@ df_zonal_fl_pop %>%
     date_breaks = "1 year",
     date_labels= "%y"
   )+
-  labs(title = "Population exposed to flooding")+
+  labs(title = "Yearly population exposed to flooding",
+       y= "Population exposed",
+       caption= "Population: World Pop\nFlood: FloodScan")+
   facet_wrap(~adm1_en)+
   theme(
     axis.text.x = element_text(angle=90),
-    axis.title.x =  element_blank()
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
   )
+```
 
-df_zonal_fl_pop_yr <- df_zonal_fl_pop_yr %>% 
-  mutate(date= as_date(date))
+## Flood Exposure Anomalies
 
-df_zonal_fl_pop_yr %>% 
-  ggplot(aes(x= date, y = value, group=adm1_en))+
-  geom_line()+
-  scale_y_continuous(labels = scales::label_comma())+
-  scale_x_date(
-    date_breaks = "1 year",
-    date_labels= "%y"
-  )+
-  labs(title = "Population exposed to flooding")+
-  facet_wrap(~adm1_en)+
-  theme(
-    axis.text.x = element_text(angle=90),
-    axis.title.x =  element_blank()
-  )
+From the admin level population exposed rasters we can easily calculate two types of anomalies:
 
-# total exposed per year - but this would have double counting
-df_zonal_fl_pop %>% 
-  group_by(across(starts_with("adm")),yr_mo = floor_date(date,"year")) %>% 
-  summarise(
-    value = sum(value),
-    max_value = max(value)
-  ) %>% 
-  ggplot(aes(x= yr_mo, y = value, group=adm1_en))+
-  geom_line()+
-  scale_y_continuous(labels = scales::label_comma())+
-  scale_x_date(
-    date_breaks = "1 year",
-    date_labels= "%y"
-  )+
-  labs(title = "Population exposed to flooding")+
-  facet_wrap(~adm1_en)+
-  theme(
-    axis.text.x = element_text(angle=90),
-    axis.title.x =  element_blank()
-  )
-df_zonal_fl_pop %>% 
-  group_by(across(starts_with("adm")),yr_mo = floor_date(date,"year")) %>% 
-  summarise(
-    value = sum(value),
-    max_value = max(value)
-  ) %>% 
-  ggplot(aes(x= yr_mo, y = max_value, group=adm1_en))+
-  geom_line()+
-  scale_y_continuous(labels = scales::label_comma())+
-  scale_x_date(
-    date_breaks = "1 year",
-    date_labels= "%y"
-  )+
-  labs(title = "Population exposed to flooding")+
-  facet_wrap(~adm1_en)+
-  theme(
-    axis.text.x = element_text(angle=90),
-    axis.title.x =  element_blank()
-  )
+1. Monthly difference from mean expsure
+2. Monthly Z-score (difference from mean/ standard deviation)
 
+```{r calcFloodExposureAnom}
 # calc anomaly
-df_zonal_fl_pop_anom <- df_zonal_fl_pop %>% 
+df_adm1_mo_pop_exposed_anom <- df_adm1_mo_pop_exposed %>% 
   mutate(
-    date= as_date(date),
     mo = month(date, label=T)
   ) %>% 
   group_by(adm1_en, adm1_pcode, mo) %>% 
@@ -330,10 +339,13 @@ df_zonal_fl_pop_anom <- df_zonal_fl_pop %>%
     z_score = diff_mean/stdev
   ) %>% 
   ungroup()
-  
+```
 
+### Plot difference from mean exposure
+
+```{r plot-monthlyDiffAnomaly,results="asis"}
 # difference from mean anomaly
-df_zonal_fl_pop_anom %>% 
+df_adm1_mo_pop_exposed_anom %>% 
   ggplot(aes(x= date, y = diff_mean, group=adm1_en))+
   geom_line()+
   scale_y_continuous(labels = scales::label_comma())+
@@ -341,24 +353,41 @@ df_zonal_fl_pop_anom %>%
     date_breaks = "1 year",
     date_labels= "%y"
   )+
-  labs()+
+    labs(title = "Monthly Flood Exposure Anomaly",
+       y= "Population exposed Anomaly (difference from average)",
+       caption= "Population: World Pop\nFlood: FloodScan"
+       )+
   facet_wrap(~adm1_en)+
   theme(
     axis.text.x = element_text(angle=90),
-    axis.title.x =  element_blank()
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
   )
+```
 
-# z score anomaly
-df_zonal_fl_pop_anom %>% 
+### Plot Exposure Anomaly (Z-score)
+
+```{r plot-MonthlyZscore, results="asis"}
+
+df_adm1_mo_pop_exposed_anom %>% 
   ggplot()+
-  geom_line(aes(x= date, y = z_score, group=adm1_en))+
-  scale_y_continuous(labels = scales::label_comma())+
-
-  labs(title = "Population Exposure to Flooding Anomaly",
-       subtitle = "World pop + Floodscan"
-         )+
+  geom_line(
+    aes(x= date,
+        y = z_score,
+        group=adm1_en)
+  )+
+  scale_y_continuous(
+    labels = scales::label_comma()
+  )+
+  labs(title = "Monthly Flood Exposure Anomaly",
+       y= "Population exposed Anomaly (Z-score)",
+       caption= "Population: World Pop\nFlood: FloodScan"
+       )+
   facet_wrap(~adm1_en)+
-  # geom_vline(xintercept = as_date("2023-01-01"))+
   geom_rect(
     data= df_el_nino_years,
     aes(
@@ -373,19 +402,26 @@ df_zonal_fl_pop_anom %>%
     scale_x_date(
     date_breaks = "1 year",
     date_labels= "%y",
-    limits = c(min(df_zonal_fl_pop_anom$date),as_date("2025-06-01")),
+    limits = c(min(df_adm1_mo_pop_exposed_anom$date),as_date("2025-06-01")),
     expand = c(0,0)
   )+
   theme(
-    axis.text.x = element_text(angle=90),
+   axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
     axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
     panel.background = element_rect(color="grey",fill=NA)
   )
 ```
 
-# Join w/ PRMN - by region
-```{r}
-library(readxl)
+# Appendix
+
+## FloodScan WorldPop Exposure Vs PRMN
+
+```{r readPRMN}
+
 dir_som_pub_raw <- file.path(
   Sys.getenv("AA_DATA_DIR"),
   "public",
@@ -404,23 +440,56 @@ df_prmn <-  df_prmn %>%
   mutate(
     date= dmy(month_end),
     yr_mo = floor_date(date, "month"),
-    ,.before= everything()
+    .before= everything()
   )
 
+df_prmn_adm1_mo <- df_prmn %>% 
+  group_by(
+    adm1_en = current_arrival_region,
+    date= yr_mo
+    ) %>% 
+  summarise(
+   number_of_individuals= sum(number_of_individuals,na.rm=T) ,
+   .groups="drop"
+  )
+```
 
-df_fs_prmn <- df_zonal_fl_pop_anom %>% 
+
+```{r joinFloodScanPRMN}
+df_fs_prmn <- df_adm1_mo_pop_exposed_anom %>% 
   left_join(
-    df_flood, by = c("date"="yr_mo",
-                     "adm1_en"="previous_departure_region")
+    df_prmn_adm1_mo,
+    by = c("date"="date",
+           "adm1_en"="adm1_en")
   ) 
+```
 
+```{r plot-FloodScanVsPrmn, results="asis"}
 df_fs_prmn %>% 
   ggplot(aes(x= value, y= number_of_individuals))+
-  geom_point()+
-  labs(x= "World Pop exposure from FloodScan")+
-  facet_wrap(~adm1_en, scale="free")
+  geom_point(size=0.7)+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_continuous(labels = scales::label_comma())+
+  labs(
+    title = "Floodscan/World Pop vs PRMN Displacement by Admin 1",
+    x= "Pop Exposure (FloodScan + World Pop)",
+    y= "Number Displaced (PRMN)",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  facet_wrap(~adm1_en, scale="free")+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
 
 
+```{r, eval =F}
 df_fs_prmn_seas <- df_fs_prmn %>% 
   mutate(
     seas = case_when(
@@ -444,11 +513,6 @@ df_fs_prmn_seas %>%
   geom_point()+
   facet_wrap(~adm1_en, scales="free")
 
-df_fs_prmn_seas %>% 
-  filter(seas== "MAM") %>% 
-  ggplot(aes(x= max_z, y= number_of_individuals))+
-  geom_point()+
-  facet_wrap(~adm1_en,scales="free")
 
 df_fs_prmn_seas %>% 
   filter(seas== "OND") %>% 
@@ -464,53 +528,66 @@ df_fs_prmn_seas %>%
   facet_wrap(~adm1_en,scales="free")
 ```
 
-```{r}
-df_prmn_baidoa_fs <- df_prmn %>% 
-  filter(
-   previous_departure_district== "Baidoa"
-  ) %>% 
-  group_by(yr_mo) %>% 
-  summarise(
-    number_of_individuals= sum(number_of_individuals,na.rm=T)
-  ) %>% 
-  left_join(
-    df_adm2_fl_pop %>% 
-      mutate(
-        date= as_date(date)
-      ) %>% 
-  filter(adm2_en=="Baydhaba") ,
-  by = c("yr_mo"="date")
-  )
+
+## Baidoa case study
+```{r wrangleBaidoa}
 df_prmn_baidoa_fs <- 
   left_join(
-    df_adm2_fl_pop %>% 
-      mutate(
-        date= as_date(date)
-      ) %>% 
+    df_adm2_mo_pop_exposed %>% 
       filter(year(date)>=2016,
              adm2_en=="Baydhaba") ,
   df_prmn %>% 
   filter(
    previous_departure_district== "Baidoa"
   ) %>% 
-     group_by(yr_mo) %>% 
+     group_by(date= yr_mo) %>% 
   summarise(
     number_of_individuals= sum(number_of_individuals,na.rm=T)
   ) ,
-  by = c("date"="yr_mo")
+  by = c("date"="date")
   )
+```
 
+### Plot - Pop displaced & Exposed
+```{r plot-BaidoaPopExposed,results="asis"}
 df_prmn_baidoa_fs  %>% 
   select(
-    adm2_en, date, number_of_individuals, value
+    adm2_en, date, `PRMN Displaced individuals`=number_of_individuals, `FloodScan + WorldPop Displaced` =value
   ) %>% 
-  pivot_longer(number_of_individuals:value,
+  pivot_longer(`PRMN Displaced individuals`:`FloodScan + WorldPop Displaced`,
                names_to = "variable",
                values_to = "value") %>% 
-  ggplot(aes(x= date, y= value, fill= variable, group= variable, color = variable))+
-  geom_point()+
-  geom_line()
+  ggplot(
+    aes(x= date, 
+        y= value, 
+        fill= variable, 
+        group= variable, 
+        color = variable
+    )
+    
+    )+
+  geom_point(alpha=0.8)+
+  geom_line(alpha=0.5)+
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")+
+    labs(
+    title = "Baidoa - PRMN Displacement and FloodScan/WorldPop Exposure",
+    y= "Exposed/Displaced",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  theme(
+   axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+   
+  )
+```
 
+### Plot - Pop displaced & Exposed
+```{r plot-BaidoaDualPopExposed,results="asis"}
 df_prmn_baidoa_fs  %>% 
   select(
     adm2_en, date, number_of_individuals, value
@@ -532,19 +609,34 @@ df_prmn_baidoa_fs  %>%
     color = hdx_hex("mint-hdx")
   )+
   scale_y_continuous(
-    # breaks = c(05,25,50,seq(100,1000, 200),2000,3000,9000),
     sec.axis = sec_axis(~.*10, name = "WorldPop Exposure (thousands)")
     )+
-  scale_x_date(date_breaks = "1 month", date_labels = "%b%y")+
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 90, hjust = 1)
-  )+
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b%y", 
+    limits = as_date(c("2016-01-01","2022-12-01")),expand = c(0,0)
+    )+
   labs(
     y= "PRMN - Number of Individuals",
-    title= "Baidoa - Displaced vs Flood Exposure",
-    subtitle = "Displaced from PRMN data, flood exposure calculated from Floodscan & Worldpop"
+    title= "Somalia Baidoa - Displaced vs Flood Exposure",
+    subtitle = "Blue dots and vertical red lines indicate PRMN Flood Displacement",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+    
   )
+```
+
+### Plot - Pop displaced & Exposed (pseudolog)
+```{r plot-BaidoaDualPopExposedPseudo,results="asis"}
 df_prmn_baidoa_fs  %>% 
   select(
     adm2_en, date, number_of_individuals, value
@@ -567,26 +659,39 @@ df_prmn_baidoa_fs  %>%
   scale_y_continuous(
     trans = scales::pseudo_log_trans(),
     breaks = c(05,25,50,seq(100,1000, 200),2000,3000,9000),
-    sec.axis = sec_axis(~.*10, name = "WorldPop Flood Exposure (thousands)")
+    sec.axis = sec_axis(
+      ~.*10, 
+      name = "WorldPop Flood Exposure (thousands)",
+      breaks= c(50,250,500,1000,10000,20000,30000,60000,90000)
+      )
     )+
   scale_x_date(date_breaks = "1 month", date_labels = "%b%y")+
-  theme(
+  labs(
+    y= "PRMN - Number of Individuals",
+    title= "Somalia Baidoa - Displaced vs Flood Exposure",
+    subtitle = "Blue dots and vertical red lines indicate PRMN Flood Displacement",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+    theme(
     legend.position = "none",
-    axis.text.x = element_text(angle = 90, hjust = 1)
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+    
   )
   
   
 ```
 
 
-```{r}
-library(gghdx)
-gghdx()
-library(gganimate)
-# install.packages("chattr")
-gdf_adm1_fly_yr <- som_adm$adm1 %>% 
+```{r animationSetup}
+gdf_adm1_yr_pop_exposed <- som_adm$adm1 %>% 
   left_join(
-    df_zonal_fl_pop_yr,
+    df_adm1_yr_pop_exposed,
     by = c("adm1_en"="adm1_en")
   ) 
 
@@ -602,7 +707,7 @@ gdf_adm1_fly_yr <- som_adm$adm1 %>%
 # https://github.com/thomasp85/gganimate/issues/479
 
 # create a ggplot object
-p <- gdf_adm1_fly_yr %>% 
+p <- gdf_adm1_yr_pop_exposed %>% 
   ggplot() +
   geom_sf(aes(fill=value)) +
   scale_fill_viridis_c() +
@@ -622,12 +727,11 @@ map_gif <- animate(p,
         width = 800,
         height = 600)
 
-nrow(gdf_adm1_fly_yr)
-nrow(df_zonal_fl_pop_yr)
+
 # create ggplot line plot that adds a new year of data every time from df_zonal_fl_pop_yr 
 # and animate with gganimate
 
-p_facet_plot <- df_zonal_fl_pop_yr %>% 
+p_facet_plot <- df_adm1_yr_pop_exposed %>% 
   mutate(
     date= as_date(date)
   ) %>% 
@@ -652,7 +756,7 @@ plot_gif <- animate(p_facet_plot,
         height = 600)
 
 
-library(magick)
+
 map_mgif <- image_read(map_gif)
 plot_mgif <- image_read(plot_gif)
 length(map_mgif)
@@ -666,12 +770,13 @@ for(i in 2:92){
   combined <- image_append(c(map_mgif[i], plot_mgif[i]))
   new_gif <- c(new_gif, combined)
 }
+```
 
+```{r FunAnimation,results= "asis"}
 new_gif
 ```
 
-```{r}
-```
+
 
 
 
