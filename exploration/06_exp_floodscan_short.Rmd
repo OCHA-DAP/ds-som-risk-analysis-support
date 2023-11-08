@@ -1,0 +1,2155 @@
+---
+title: "Floodscan Explore"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "hide",
+  out.width= "100%"
+)
+```
+
+# Intro
+
+This is the start of an analysis looking at the utility of FloodScan for this research. This analysis is largely **incomplete** and most likely out of scope of project goals so will put on pause.
+
+```{r libsData}
+library(tidyverse)
+library(sf)
+library(tidync)
+library(rhdx)
+library(exactextractr)
+library(janitor)
+library(terra)
+library(glue)
+library(exactextractr)
+library(here)
+library(gghdx)
+# these are for appendix
+library(readxl) # read in prmn
+library(gganimate)
+library(magick)
+
+library(ggridges)
+source(here("R/utils_floodscan.R"))
+gghdx()
+
+som_adm0_levels <- c(
+  "som_admbnda_adm0_ocha_20230308",
+  "som_admbnda_adm1_ocha_20230308",
+  "som_admbnda_adm2_ocha_20230308"
+)
+
+som_adm <- som_adm0_levels %>%
+  map(
+    ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
+      pluck(1) %>%
+      get_resource(2) %>%
+      read_resource(layer = .x) %>%
+      clean_names() %>%
+      select(matches("^adm\\d_"))
+  ) %>%
+  set_names(c("adm0", "adm1", "adm2"))
+
+
+# load COD files for settlements - note SWALIM has a harmonized settlement file
+# wil 11720 settlements.
+gdf_setts <- pull_dataset("a9842100-0f5a-498b-956e-b0990e9e86a5") %>% 
+  get_resource(1) %>% 
+  read_resource(layer= "som_settlements_2022") %>% 
+  clean_names() 
+
+# file path ocha-exploratory data
+dir_ocha_explore <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "exploration",
+  "som",
+  "ocha"
+  
+)
+
+df_ocha_pop <- readxl::read_xlsx(
+  path = file.path(dir_ocha_explore,"2024 Population Disaggregation.xlsx" ),
+  sheet="Humanitarian Plannning 2024 pop",skip = 1
+  ) %>% 
+  clean_names()
+
+
+# file path floodscan
+fp_fs <-   file.path(
+    Sys.getenv("AA_DATA_DIR"),
+    "private",
+    "raw",
+    "glb",
+    "floodscan",
+    "floodscan_flooded_fraction_africa_19980112-20221231_p00",
+    "aer_sfed_area_300s_19980112_20221231_v05r01.nc"
+  )
+
+
+
+tnc_fs <- tidync(fp_fs)
+tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,geometry = som_adm$adm0)
+r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
+
+dir_wp <-  file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "raw",
+  "som",
+  "worldpop"
+)
+fp_wp <-  file.path(
+  dir_wp,
+  "som_ppp_2020_1km_Aggregated_UNadj.tif" 
+)
+r_wp <-  rast(fp_wp)
+
+```
+
+```{r dfElNino}
+# this is just for qual visuals
+# El Nino year - Just from Wikipedia for a first glance
+df_el_nino_years <- tibble(
+  date = 
+    c("1982-1983",
+      "1997-1998",
+      "2002-2003",
+      "2004-2005",
+      "2006-2007",
+      "2009-2010",
+      "2014-2016",
+      "2018-2019",
+      "2023-2024"
+    )
+) %>% 
+  separate(
+    date ,into = c("start_date","end_date"),sep = "-"
+  ) 
+
+# fomat data.frame for ggplot
+df_el_nino_years <- df_el_nino_years %>% 
+  mutate(
+    start_date= glue("{start_date}-01-01") %>% as_date(),
+    end_date = glue("{end_date}-12-31") %>% as_date()
+  )
+```
+
+# Population Exposed to Flooding (FloodScan + World Pop)
+
+Population exposed to flooding is derived by combining FloodScan and World Pop in the following process:
+
+1. Calculate maximum flood scan fraction per a. month and, b. year at the pixel level (max composites)
+
+```{r calcFSMaxComposites}
+# This chunk calculates maximum floodscan fraction per month and year
+
+# make a lookup table to be used for raster manipulations
+fs_mos<- floor_date(as_date(names(r_fs)),"month")
+
+fs_lookup <- tibble(
+  fs_name = as_date(names(r_fs))
+) %>% 
+  mutate(
+    fs_mo = floor_date(fs_name,"month"),
+    fs_yr = floor_date(fs_name,"year"),
+    fs_seas = paste0(case_when(
+      month(fs_mo) %in% c(3,4,5) ~ "MAM",
+      month(fs_mo) %in% c(10,11,12) ~ "OND",
+      .default ="other"
+      
+    ),"_",year(fs_yr))
+  ) 
+
+# calculate max floodscan fraction per month (pixel level)
+lr_monthly_max <- unique(fs_lookup$fs_mo) %>% 
+  map(
+    \(mo_tmp){
+      rname_temp<- fs_lookup %>% 
+        filter(fs_mo==mo_tmp) %>% 
+        pull(fs_name)
+      r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
+      r_max <- max(r_fs_tmp)
+      r_max %>% 
+        set.names(mo_tmp)
+      return(r_max)
+    }
+  )
+# convert list of max rasters back to raster stack
+r_fs_monthly_max <-  rast(lr_monthly_max)
+
+# do the same, but this time per year
+lr_yearly_max <- unique(fs_lookup$fs_yr) %>% 
+  map(
+    \(yr_tmp){
+      rname_temp<- fs_lookup %>% 
+        filter(fs_yr==yr_tmp) %>% 
+        pull(fs_name)
+      r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
+      r_max <- max(r_fs_tmp)
+      r_max %>% 
+        set.names(yr_tmp)
+      return(r_max)
+    }
+  )
+
+r_fs_yearly_max <-  rast(lr_yearly_max)
+```
+
+2. Align and resample FloodScan max composites to World Pop raster
+
+```{r preProcessFloodScan}
+#' Process max composites so they can be combined w/ world pop raster
+#' Set extents & resample
+
+# set extents to be equal
+r_fs_monthly_max_crop <- crop(r_fs_monthly_max, r_wp)
+r_fs_yearly_max_crop <- crop(r_fs_yearly_max, r_wp)
+ext(r_fs_monthly_max_crop) <- ext(r_wp)
+ext(r_fs_yearly_max_crop) <- ext(r_wp)
+
+system.time(
+r_fs_monthly_resampled <- terra::resample(x = r_fs_monthly_max_crop,r_wp)  
+)
+
+system.time(
+r_fs_yearly_resampled <- terra::resample(x = r_fs_yearly_max_crop,r_wp)  
+)
+
+```
+
+3. Multiply resampled FloodScan max composites by World Pop population estimate raster. From this we have a new rasters representing the population exposed per month/year.
+```{r multFloodScanWorldPop}
+#' Multiply resampled floodscan and world pop data
+r_fs_mo_wp<- r_fs_monthly_resampled * r_wp
+r_fs_yr_wp<- r_fs_yearly_resampled * r_wp
+```
+
+
+
+Can we create a baseline?
+```{r}
+baseline_years <-  1998:2016
+fs_lookup_seas <- fs_lookup %>% 
+  filter(
+    !str_detect(fs_seas,"^other_")
+  )
+
+split_rstack_baseline <- function(r, baseline_years){
+  ret <- list()
+  ret$baseline <- r[[year(names(r)) %in% baseline_years]]
+  ret$not_baseline <- r[[!year(names(r)) %in% baseline_years]]
+  return(ret)
+}
+# do the same, but this time per year
+lr_seas_max <- unique(fs_lookup_seas$fs_seas) %>% 
+  map(
+    \(seas_tmp){
+      rname_temp<- fs_lookup_seas %>% 
+        filter(fs_seas==seas_tmp) %>% 
+        pull(fs_name)
+      r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
+      r_max <- max(r_fs_tmp)
+      r_max %>% 
+        set.names(rname_temp[1])
+      return(r_max)
+    }
+  )
+r_seas_max <- rast(lr_seas_max)
+# set extents to be equal
+r_fs_seas_max_crop <- crop(r_seas_max, r_wp)
+ext(r_fs_seas_max_crop) <- ext(r_wp)
+
+
+system.time(
+r_fs_seas_max_resampled <- terra::resample(x = r_fs_seas_max_crop,r_wp)  
+)
+
+r_fs_seas_mam_max <- r_fs_seas_max_resampled[[month(names(r_fs_seas_max_resampled)) %in% 3]]
+r_fs_seas_ond_max <- r_fs_seas_max_resampled[[month(names(r_fs_seas_max_resampled)) %in% 10]]
+```
+
+# Combine WorldPop & FloodScan
+## Method 1
+
+```{r}
+# Methodology 1 - just multiply flood frac by world pop
+r_exposure_seas_mam_max <- r_fs_seas_mam_max * r_wp
+r_exposure_seas_ond_max <- r_fs_seas_ond_max * r_wp
+```
+
+Even if using methodology 1 I think there should still be some threshold to remove very low levels. Mainly I think enough of these very low values over large states add up to alot of peple
+```{r}
+r_fs_seas_max_clipped <- mask(r_fs_seas_max_crop,som_adm$adm0)
+r_fs_seas_max_clipped %>%
+  values() %>%  
+  data.frame() %>% 
+  pivot_longer(everything()) %>% 
+  filter(!is.na(value)) %>% 
+  ggplot(aes(x= value))+
+  geom_histogram()+
+  scale_x_log10(
+    labels= scales::label_percent()
+  )+
+  labs(
+    title = "Distribution of all non-zero flood fraction pixel values (FloodScan)"
+  )+
+  theme(
+    axis.title.x = element_blank()
+  )
+```
+
+
+## Get average flood risk - Method 1
+```{r}
+#rstack 
+
+# mam
+rs_exposure_seas_mam <- split_rstack_baseline(r_exposure_seas_mam_max,baseline_years = baseline_years)
+r_pop_exposed_mam_baseline_mean <- mean(rs_exposure_seas_mam$baseline) 
+r_pop_exposed_mam_baseline_mean %>% 
+  set.names("MAM_baseline")
+
+rs_exposure_seas_ond <- split_rstack_baseline(r_exposure_seas_ond_max,baseline_years = baseline_years)
+r_pop_exposed_ond_baseline_mean <- mean(rs_exposure_seas_ond$baseline)
+r_pop_exposed_ond_baseline_mean %>% 
+  set.names("OND_baseline")
+  
+r_pop_exposed_seas_baselines<- rast(
+  list(r_pop_exposed_mam_baseline_mean,
+  r_pop_exposed_ond_baseline_mean)
+     )
+
+# writeRaster(r_pop_exposed_seas_baselines,"somalia_fs_pop_baselines.tif")
+```
+
+
+## Method 2
+```{r}
+# Methodology 2 - would be to convert from flood fract o binary (w/ threshold)
+# arbitrarily choose 0.2 thresh
+flood_frac_thresh <- 0.2
+r_exposure_seas_mam_max_lgl_mask<-ifel(r_fs_seas_mam_max>=flood_frac_thresh,1,0)
+r_exposure_seas_mam_max_thresholded <- r_exposure_seas_mam_max_lgl_mask * r_wp
+
+
+
+r_exposure_seas_ond_max_lgl_mask<-ifel(r_fs_seas_ond_max>=flood_frac_thresh,1,0
+                                       )
+
+
+r_fs_seas_both_lgl_mask<-ifel(r_fs_seas_max_resampled>=flood_frac_thresh,1,0)
+r_exposure_seas_both_thresholded <- r_fs_seas_both_lgl_mask * r_wp
+
+
+
+```
+
+
+```{r output_hazard_map_layer,eval=F}
+#  this is just for QGIS visualization purpose - hazard panel
+r_fs_frac_split <- split_rstack_baseline(r_fs_seas_mam_max,baseline_years = baseline_years)
+r_fs_frac_baseline_mean <- mean(r_fs_frac_split$baseline )
+
+# going to leave this blanked out so reviewer doesn't run by accident
+# writeRaster(r_fs_frac_baseline_mean,
+#             file.path("maps","r_fs_frac_baseline_mean.tif"),
+#             overwrite = TRUE)
+```
+
+
+## Flood Exposure Historical
+
+## Method 1 - admin 1
+```{r}
+
+df_adm1_historical_exposure_stats_wide <- exact_extract(x = r_exposure_seas_mam_max,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode"),
+                                force_df = TRUE
+                                ) 
+df_adm1_historical_exposure_stats <- df_adm1_historical_exposure_stats_wide %>% 
+  pivot_longer(cols = starts_with("sum"),
+               names_to = "sum_date",
+               values_to = "pop_exposed") %>% 
+  separate(col = sum_date, "\\.",into = c("stat","date")) %>% 
+  mutate(
+    date= as_date(date)
+  )
+
+
+df_adm1_historical_exposure_stats_thresh_wide <- exact_extract(x = r_exposure_seas_mam_max_thresholded,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode"),
+                                force_df = TRUE
+                                ) 
+
+df_adm1_historical_exposure_stats_thresh <- df_adm1_historical_exposure_stats_thresh_wide %>% 
+  pivot_longer(cols = starts_with("sum"),
+               names_to = "sum_date",
+               values_to = "pop_exposed") %>% 
+  separate(col = sum_date, "\\.",into = c("stat","date")) %>% 
+  mutate(
+    date= as_date(date)
+  )
+
+
+df_adm1_historical_exposure_stats_thresh %>% 
+  ggplot(
+    aes(x= pop_exposed)
+  )+
+  geom_histogram(bins =100)+
+  scale_x_continuous(
+    trans= scales::pseudo_log_trans(),
+     labels= scales::comma
+  )+
+  facet_wrap(~adm1_en, scales="free_x")
+
+
+df_adm1_historical_exposure_stats_thresh %>% 
+  ggplot(
+    aes(x= pop_exposed,y = adm1_en)
+  )+
+  geom_density_ridges()+
+  scale_x_continuous(
+    # trans= scales::pseudo_log_trans(),
+    labels= scales::comma
+  )
+
+
+qt_50_80<- df_adm1_historical_exposure_stats_thresh %>% 
+  ggplot(
+    aes(x= pop_exposed,y = adm1_en)
+  )+
+  geom_boxplot()+
+  scale_x_continuous(
+    labels= scales::comma
+  )
+
+df_qt_50_80 <- df_adm1_historical_exposure_stats_thresh %>% 
+  group_by(
+    adm1_en, adm1_pcode
+  ) %>% 
+  reframe(
+    qt_50 = quantile(pop_exposed,probs=0.5),
+    qt_80 = quantile(pop_exposed,probs=0.8)
+  ) %>% 
+  mutate(
+    qt_50_80_range = paste0(round(qt_50,-2)," - ",round(qt_80,-2))
+  )
+
+
+
+
+df_adm1_exposure_summary <- df_adm1_historical_exposure_stats %>% 
+  group_by(
+    across(starts_with("adm"))
+  ) %>% 
+    summarise(
+      across(pop_exposed,
+             list(mean = mean,median=median, min= min, max= max)),
+      .groups="drop"
+      ) %>% 
+  mutate(
+    `mean/median` = paste0(round(pop_exposed_mean,-2)," , ",round(pop_exposed_median,-2)),
+    `min/max`=paste0(round(pop_exposed_min,0)," , ",round(pop_exposed_max,0))
+  )
+
+df_adm1_exposure_summary_thresh <- df_adm1_historical_exposure_stats_thresh %>% 
+  group_by(
+    across(starts_with("adm"))
+  ) %>% 
+    summarise(
+      across(pop_exposed,
+             list(mean = mean,median=median, min= min, max= max)),
+      .groups="drop"
+      ) %>% 
+  mutate(
+    `mean/median` = paste0(round(pop_exposed_mean,-2)," , ",round(pop_exposed_median,-2)),
+    `min/max`=paste0(round(pop_exposed_min,0)," , ",round(pop_exposed_max,0))
+  )
+
+# doesnt seem to useful at admin 2 level
+df_adm1_methods_joined <- df_adm1_exposure_summary %>% 
+  select(adm1_en, meth1_mean_med=`mean/median`, meth1_min_max=`min/max`) %>% 
+  left_join(
+    df_adm1_exposure_summary_thresh %>% 
+      select(adm1_en, meth2_mean_med=`mean/median`, meth2_min_max=`min/max`) 
+  ) %>% 
+  left_join(
+    df_qt_50_80 %>% 
+      select(adm1_en, qt_50_80_range)
+  )
+library(gt)
+  
+df_adm1_methods_joined %>% 
+  gt() %>% 
+  cols_label(
+    adm1_en = "Admin 1 (region)",
+    meth2_mean_med = "Mean/Median",
+    meth2_min_max = "Min/Max",
+    meth1_mean_med = "Mean/Median",
+    meth1_min_max = "Min/Max",
+    qt_50_80_range = "50th - 80th percentile range"
+    ) %>%
+  tab_header(title ="Flood Exposure Summary Statistics MAM Historical Seasons",
+             subtitle = "Summary stats calculated on seasonal data 1998-2022") %>% 
+  gt::tab_spanner(
+    label = "Method 1 (flood frac x Pop)",
+    columns = c(`meth1_mean_med`,`meth1_min_max`)
+  ) %>%
+  gt::tab_spanner(
+    label = "Method 2 (flood frac thresholded x Pop)",
+    columns = c(`meth2_mean_med`,`meth2_min_max`,`qt_50_80_range`)
+  ) %>%
+  tab_footnote(
+    html("<b>Methodology Note</b><br>
+         1. Yearly MAM max flood fraction composite created from daily flod fraction raster<br>
+         2. Composite flood raster multiplied by population raster to create yearly MAM exposure rasters<br>
+         &emsp;<b>method 1:</b> Flooded fraction composite raster multiplied by population raster<br>
+         &emsp;<b>method 2:</b> Each max flood frac composite converted to binary flooded/not flooded (using flood frac threshold of 20%) and then multiplied by population raster<br>
+         3. Yearly MAM exposure raster summed to admin 1 boundaries<br>
+         4. Summary statistics calculated per admin on the admin 1 exposure summaries (mean/median figures rounded to nearest 100)"
+         
+         )
+  ) %>% 
+  tab_source_note(source_note = html(
+    "<b>Flood Fraction:</b> FloodScan (1998-2022)<br>
+    <b>Population Raster:</b> WorldPop (2020 UN adjusted)"
+  ))
+
+```
+
+
+### Historical Exposure Distributions at Admin 2
+```{r}
+# World Pop Adin 1 Stats (Population per admin 1)
+df_summary_adm2_wp <- exact_extract(x = r_wp,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  select(-name) %>% 
+  rename(
+    pop = "value"
+  )
+
+
+# lets get some stats
+df_adm2_historical_exposure_stats_wide <- exact_extract(x = r_exposure_seas_mam_max,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode"),
+                                force_df = TRUE
+                                ) 
+df_adm2_historical_exposure_stats <- df_adm2_historical_exposure_stats_wide %>% 
+  pivot_longer(cols = starts_with("sum"),
+               names_to = "sum_date",
+               values_to = "pop_exposed") %>% 
+  separate(col = sum_date, "\\.",into = c("stat","date")) %>% 
+  mutate(
+    date= as_date(date)
+  )  
+
+# lets get some stats
+df_adm2_historical_exposure_stats_wide_thresh <- exact_extract(x = r_exposure_seas_mam_max_thresholded,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode"),
+                                force_df = TRUE
+                                ) 
+
+df_adm2_historical_exposure_stats_thresh <- df_adm2_historical_exposure_stats_wide_thresh %>% 
+  pivot_longer(cols = starts_with("sum"),
+               names_to = "sum_date",
+               values_to = "pop_exposed") %>% 
+  separate(col = sum_date, "\\.",into = c("stat","date")) %>% 
+  mutate(
+    date= as_date(date)
+  ) 
+# lets get some stats
+df_adm2_historical_both_seas_stats_wide_thresh <- exact_extract(x = r_exposure_seas_both_thresholded,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode"),
+                                force_df = TRUE
+                                ) 
+
+df_adm2_historical_both_seas_thresh <- df_adm2_historical_both_seas_stats_wide_thresh %>% 
+  pivot_longer(cols = starts_with("sum"),
+               names_to = "sum_date",
+               values_to = "pop_exposed") %>% 
+  separate(col = sum_date, "\\.",into = c("stat","date")) %>% 
+  mutate(
+    date= as_date(date)
+  ) 
+
+
+df_adm2_historical_exposure_stats_thresh_pop_adj <- df_adm2_historical_exposure_stats_thresh %>% 
+  left_join(
+    df_summary_adm2_wp 
+  ) %>% 
+  mutate(
+    pct_exposed = pop_exposed/pop
+  ) %>% 
+  left_join(
+    df_ocha_pop %>% 
+      select(district,district_pcode, pop_24 = revised_population_methodology_2024_unfpa_adoptation) ,
+    by = c("adm2_en"="district","adm2_pcode"="district_pcode")
+  ) %>% 
+  mutate(
+    pop_exposed_24 = pop_24*pct_exposed
+  )
+
+
+# do for both seas at once
+df_adm2_both_seas_thresh_pop_adj <- df_adm2_historical_both_seas_thresh %>% 
+  left_join(
+    df_summary_adm2_wp 
+  ) %>% 
+  mutate(
+    pct_exposed = pop_exposed/pop
+  ) %>% 
+  left_join(
+    df_ocha_pop %>% 
+      select(district,district_pcode, pop_24 = revised_population_methodology_2024_unfpa_adoptation) ,
+    by = c("adm2_en"="district","adm2_pcode"="district_pcode")
+  ) %>% 
+  mutate(
+    pop_exposed_24 = pop_24*pct_exposed
+  )
+
+
+
+
+# this is how we would aggregate... to match - could be better
+df_adm1_historical_both_seas_pop_adj <- df_adm2_both_seas_thresh_pop_adj %>% 
+  group_by(
+    across(starts_with("adm1")),date
+    ) %>% 
+  summarise(
+    pop_wp = sum(pop),
+    pop_24= sum(pop_24),
+    pop_exposed_wp = sum(pop_exposed),
+    pop_exposed_24 = sum(pop_exposed_24),
+    pct_pop_exposed_24 = pop_exposed_24/pop_24,
+    .groups="drop"
+  )
+  
+# oth seas at once
+df_adm1_historical_pop_adj <- df_adm2_historical_exposure_stats_thresh_pop_adj %>% 
+  group_by(
+    across(starts_with("adm1")),date
+    ) %>% 
+  summarise(
+    pop_wp = sum(pop),
+    pop_24= sum(pop_24),
+    pop_exposed_wp = sum(pop_exposed),
+    pop_exposed_24 = sum(pop_exposed_24),
+    pct_pop_exposed_24 = pop_exposed_24/pop_24,
+    .groups="drop"
+  )
+
+
+
+df_adm1_exposed_mean_pop_adj <- df_adm1_historical_pop_adj %>% 
+  group_by(
+    across(starts_with("adm1"))
+  ) %>% 
+  summarise(
+    pop_exposed_24 = mean(pop_exposed_24),
+    pop_exposed_wp = mean(pop_exposed_wp),
+    pop_24 = unique(pop_24),
+    pop_wp = unique(pop_wp),
+    .groups="drop"
+  ) %>% 
+  mutate(
+    pct_wp_exposed = pop_exposed_wp/pop_wp,
+    pct_pop24_exposed = pop_exposed_24/pop_24,
+  )
+
+
+# Figure out percentile thresholds on both %s and pop exposed at admin 1 level
+
+# Nicer example here: https://www.tidyverse.org/blog/2020/03/dplyr-1-0-0-summarise/
+# turning it into a function so i can easily play w/ ranges to look at them
+quibble <- function(x, q = c(0.25, 0.5, 0.75)) {
+  tibble("{{ x }}" := quantile(x, q), "{{ x }}_q" := q)
+}
+
+
+df_adm1_flood_quantiles <- df_adm1_historical_pop_adj %>% 
+  group_by(
+    across(starts_with("adm"))
+  ) %>% 
+  reframe(
+    quibble(pct_pop_exposed_24,q=c(seq(0,0.95,0.05),0.99)),
+    quibble(pop_exposed_24,q=c(seq(0,0.95,0.05),0.99))
+                            
+  )
+
+df_adm1_flood_quantiles_both_seas <- df_adm1_historical_both_seas_pop_adj %>% 
+  mutate(mo= month(date)) %>% 
+  group_by(across(starts_with("adm")),mo) %>% 
+    reframe(
+    quibble(pct_pop_exposed_24,q=c(seq(0,0.95,0.05),0.99)),
+    quibble(pop_exposed_24,q=c(seq(0,0.95,0.05),0.99))
+                            
+  )
+
+
+
+q_range <-  c(0.5,0.8)
+q_range_label <-  paste0(glue_collapse(
+  round(q_range*100,0),
+  sep = "-",
+), " percentile")
+
+
+
+df_qt_50_80 <- df_adm1_flood_quantiles %>% 
+  filter(pop_exposed_24_q%in% q_range) %>%
+    group_by(
+    across(starts_with("adm"))
+  ) %>% 
+  summarise(
+    !!glue("Pop exposed ({q_range_label})") := paste0(
+      formatC(round(min(pop_exposed_24),-2),format="d", big.mark=",")," - ",
+      formatC(round(max(pop_exposed_24),-2),format="d", big.mark=",")
+    ),
+    !!glue("Pct exposed ({q_range_label})") := paste0(
+      round(min(pct_pop_exposed_24*100),0),
+      " - ",
+      round(max(pct_pop_exposed_24*100),0)
+    )
+  )
+
+
+
+q_range <-  c(0.5,0.95)
+q_range_label <-  paste0(glue_collapse(
+  round(q_range*100,0),
+  sep = "-",
+), " percentile")
+
+
+df_qt_50_95 <- df_adm1_flood_quantiles %>% 
+  filter(pop_exposed_24_q%in% q_range) %>%
+    group_by(
+    across(starts_with("adm"))
+  ) %>% 
+  summarise(
+    !!glue("Pop exposed ({q_range_label})") := paste0(
+      formatC(round(min(pop_exposed_24),-2),format="d", big.mark=",")," - ",
+      formatC(round(max(pop_exposed_24),-2),format="d", big.mark=",")
+    ),
+    !!glue("Pct exposed ({q_range_label})") := paste0(
+      round(min(pct_pop_exposed_24*100),0),
+      " - ",
+      round(max(pct_pop_exposed_24*100),0)
+    )
+  )
+
+left_join(
+  df_qt_50_80,
+  df_qt_50_95
+) %>% 
+  ungroup() %>% 
+  select(-adm1_pcode) %>% 
+  gt() %>% 
+  cols_label(
+    adm1_en="Region",
+    `Pct exposed (50-80 percentile)` ="% Pop exposed (50-80th percentile)",
+    `Pct exposed (50-95 percentile)` ="% Pop exposed (50-95th percentile)"
+  ) %>% 
+   tab_header(title ="Flood Exposure Percentile Ranges",
+             subtitle = "Summary stats calculated on MAM seasonal data 1998-2022") %>% 
+  tab_footnote(
+    html("<b>Methodology Note</b><br>
+         1. Yearly MAM max flood fraction composite created from daily flod fraction raster<br>
+         2. Each max flood fraction composite converted to binary flooded/not flooded (using flood frac threshold of 20%) and then multiplied by population raster<br>
+         3. % Population exposed calculating admin 2 elvel zonal sums of pop exposed and total population and then calculating the ratio<br>
+         4. These %s were then applied to the updated 2024 Somalia admin 2 level figures to get new estimates of total population exposed<br>
+         5. These figures were aggregated and from admin 2 to admin 1 and percentiles were calculated."
+         
+         )
+  ) %>% 
+  tab_source_note(source_note = html(
+    "<b>Flood Fraction:</b> FloodScan (1998-2022)<br>
+    <b>Population Raster:</b> WorldPop (2020 UN adjusted)<br>
+    <b>Population adjustments:</b> OCHA 2023"
+  ))
+
+```
+
+## Quantile Ranges Admin 1 - MAM & OND
+```{r}
+
+ldf_q_tbl <- df_adm1_flood_quantiles_both_seas %>% 
+  filter(mo==10 & pct_pop_exposed_24_q %in% c(0.25,0.75)|
+         mo== 3 & pct_pop_exposed_24_q %in% c(0.5,0.95),
+         ) %>% 
+  rename(
+    q ="pct_pop_exposed_24_q"
+  ) %>% 
+  select(-ends_with("_q")) %>% 
+  split(.$mo) %>% 
+  imap(
+    \(dft,nm_mo){
+    
+      if(nm_mo==3){
+        pop_range_label = "mam_pop_50_95"
+        pct_range_label = "mam_pct_50_95"
+      }
+      if(nm_mo==10){
+       pop_range_label = "ond_pop_25_75"
+       pct_range_label = "ond_pct_25_75"
+       
+      }
+      dft %>% 
+        group_by(across(starts_with("adm"))) %>% 
+        summarise(
+          !!pop_range_label:=
+            paste0(formatC(round(min(pop_exposed_24),-2),format="d", big.mark=",")," - ",
+            formatC(round(max(pop_exposed_24),-2),format="d", big.mark=",")
+          ),
+          !!pct_range_label:=
+            paste0(formatC(round(min(pct_pop_exposed_24*100),0),format="d", big.mark=",")," - ",
+            formatC(round(max(pct_pop_exposed_24*100),0),format="d", big.mark=",")
+          ),.groups="drop"
+        ) 
+    }
+  )
+df_q_tbl_summary<- reduce(ldf_q_tbl,left_join)  
+df_q_tbl_summary %>% 
+  select(-adm1_pcode) %>% 
+  gt() %>% 
+  gt::cols_label(
+    adm1_en= "Region",
+    ond_pop_25_75="Population Estimates (25-75th percentile)",
+    ond_pct_25_75="% Estimates (25-75th percentile)",
+    mam_pop_50_95="Population Estimates (50-95th percentile)",
+    mam_pct_50_95= "% Estimates (50-95th percentile)",
+  ) %>% 
+  tab_spanner(
+    label = "MAM",
+    columns = c("mam_pop_50_95","mam_pct_50_95")
+  ) %>%
+  tab_spanner(
+    label = "OND",
+    columns = c("ond_pop_25_75","ond_pct_25_75")
+  ) 
+
+#%>% 
+    #   pivot_wider(
+    # names_from = q,
+    # values_from = c("pop_exposed_24","pct_pop_exposed_24"),
+    # names_prefix =pre
+        # select(-mo)
+```
+
+### Figures for Flood +Severity
+```{r}
+ 
+# this one could be for mapping w/ severity
+df_adm2_historical_both_seas_pop_adj <- df_adm2_both_seas_thresh_pop_adj %>% 
+  group_by(
+    across(starts_with("adm")),mo=month(date)
+    ) %>% 
+  summarise(
+    pop_wp = sum(pop),
+    pop_24= sum(pop_24),
+    pop_exposed_wp = sum(pop_exposed),
+    pop_exposed_24 = sum(pop_exposed_24),
+    pct_pop_exposed_24 = pop_exposed_24/pop_24,
+    .groups="drop"
+  )
+
+df_adm2_historical_both_seas_pop_adj %>% 
+  select(starts_with("adm"),mo,pct_pop_exposed_24,pop_24) %>% 
+  group_by(across(starts_with("adm"))) %>% 
+  summarise(
+    pct_district_exposed = max(pct_pop_exposed_24),
+    pop_24=unique(pop_24),
+    .groups="drop"
+  ) %>% 
+  mutate(
+    pop_district_exposed = pct_district_exposed*pop_24
+  )
+  
+```
+
+
+### Ridge Plot
+```{r}
+df_adm2_historical_exposure_stats %>% 
+  ggplot(
+    aes(x= pop_exposed,
+        y= adm2_en)
+  )+
+  geom_density_ridges()+
+  facet_wrap(~adm1_en,scales="free_y")+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+```
+
+### Box plot
+```{r}
+
+df_adm2_historical_exposure_stats %>% 
+  ggplot(
+    aes(x= pop_exposed,
+        y= adm2_en)
+  )+
+  geom_boxplot()+
+  facet_wrap(~adm1_en,scales="free_y")+
+    theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+
+
+df_adm2_exposure_summary <- df_adm2_historical_exposure_stats %>% 
+  group_by(
+    across(starts_with("adm"))
+  ) %>% 
+    summarise(
+      across(pop_exposed,
+             list(mean = mean,median=median, min= min, max= max)),
+      .groups="drop"
+      ) %>% 
+  mutate(
+    `mean/median` = paste0(round(pop_exposed_mean,0)," / ",round(pop_exposed_median,0)),
+    `min/max`=paste0(round(pop_exposed_min,0)," / ",round(pop_exposed_max,0))
+  )
+
+
+
+# doesnt seem to useful at admin 2 level
+df_adm2_exposure_summary %>% 
+  select(adm1_en, adm2_en, `mean/median`, `min/max`) %>% 
+  gt() %>% 
+  tab_header(title ="Flood Exposure Summary Statistics MAM Historical Seasons",
+             subtitle = "Summary stats calculated on seasonal data 1998-2022")
+
+
+# doesnt seem to useful at admin 2 level
+tbl_adm1_summary <- df_adm1_exposure_summary %>% 
+  arrange(desc(pop_exposed_mean)) %>% 
+  select(`Region (admin 1)`=adm1_en, `mean/median`, `min/max`) %>% 
+  
+  gt() %>% 
+  tab_header(title ="Flood Exposure Summary Statistics MAM Historical Seasons",
+             subtitle = "Summary stats calculated on seasonal data 1998-2022") %>% 
+  tab_footnote(
+    html("<b>Methodology Note</b><br>
+         1. Yearly MAM max flood fraction composite created from FloodScan<br>
+         2. Each max flood composite raster multiplied by WorldPop (2020 UN adjusted) raster to create yearly MAM exposure raster <br>
+         3. Yearly MAM exposure raster summed to admin 1 boundaries<br>
+         4. Summary statistics calculated per admin on the admin 1 exposure summaries (mean/median figures rounded to nearest 100)"
+         
+         )
+  )
+
+tbl_adm1_summary
+```
+
+
+```{r}
+df_adm1_historical_exposure_anom <- df_adm1_historical_exposure_stats %>% 
+  group_by(
+    across(starts_with("adm"))
+  ) %>% 
+    mutate(
+      across(pop_exposed,
+             list(mean = mean,
+                  median=median,
+                  sd=sd,
+                  min= min, 
+                  max= max)),
+      diff_mean_anom = pop_exposed-pop_exposed_mean,
+      dff_mean_pct = (pop_exposed-pop_exposed_mean)/pop_exposed_mean,
+      pct_range = pop_exposed/pop_exposed_max
+      ) %>% 
+  ungroup()
+  
+
+p_hist_exposure_adm1 <- df_adm1_historical_exposure_anom %>% 
+  ggplot(
+    aes(x= date, y= pop_exposed)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(
+    date_labels = "%y", 
+    limits = c(as.Date("2010-01-01"),as.Date("2022-01-01")),
+    date_breaks = "1 year"
+  )+
+  scale_y_continuous(
+    labels=scales::label_comma(),
+    breaks= seq(0,300000, by= 50000)
+    )+
+  facet_wrap(~adm1_en)+
+  labs(
+    title = "Somalia MAM Flood Exposure at Admin 1 Level",
+    subtitle = "Since 2010 (FloodScan + WorldPop)",
+    y= "Pop exposed"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90),
+    axis.title.x = element_blank(),
+    panel.border = element_rect(colour = "grey", fill=NA, size=1)
+  )
+
+p_hist_exposure_adm1
+```
+
+## Anomalies
+
+
+```{r}
+
+df_adm1_historical_exposure_anom %>% 
+  ggplot(
+    aes(x= date, y= diff_mean_anom)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(
+    date_labels = "%Y", 
+    limits = c(as.Date("2010-01-01"),as.Date("2022-01-01")),
+    date_breaks = "1 year"
+  )+
+  facet_wrap(~adm1_en)+
+  labs(
+    y= "Exposure Anomaly (difference from historical mean)"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+```
+
+
+```{r}
+df_adm1_historical_exposure_anom %>% 
+  ggplot(
+    aes(x= date, y= pct_range)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(
+    date_labels = "%Y", 
+    limits = c(as.Date("2010-01-01"),as.Date("2022-01-01")),
+    date_breaks = "1 year"
+  )+
+  facet_wrap(~adm1_en)+
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1))+
+  labs(
+    y= "%  of Max Historical Exposure"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1)
+  )
+
+  
+```
+
+
+```{r}
+df_adm1_stats <- df_adm2_stats %>% 
+  group_by(adm1_en,adm1_pcode) %>% 
+  summarise(
+    across(starts_with("sum"),sum),
+    .groups="drop"
+  ) 
+  
+
+```
+
+
+```{r}
+# from ERP
+# datapasta::tribble_paste()
+df_adm2_erp<- tibble::tribble(
+             ~State,           ~adm1_en,       ~adm2_en, ~`2023.HRP.Target`, ~Flood.Affected,
+          "Banadir",         "Banadir",       "Banadir",          "902,094",            9300,
+         "Galmudug",       "Galgaduud",       "Cadaado",           "31,047",             307,
+         "Galmudug",       "Galgaduud", "Dhuusamarreeb",           "63,579",           32212,
+         "Galmudug",           "Mudug",     "Gaalkacyo",          "167,697",           17661,
+         "Galmudug",           "Mudug",      "Galdogob",           "30,239",              96,
+         "Galmudug",           "Mudug",         "Hobyo",           "26,636",           33001,
+     "Hirshabellle",          "Hiraan",   "Belet Weyne",           "88,685",          199212,
+     "Hirshabellle",          "Hiraan",    "Bulo Burto",            "7,893",           23086,
+     "Hirshabellle",          "Hiraan",     "Jalalaqsi",            "7,333",           21618,
+     "Hirshabellle", "Middle Shabelle",        "Jowhar",           "99,154",          287572,
+     "Hirshabellle", "Middle Shabelle",        "Balcad",           "38,995",          106028,
+         "Jubaland",            "Gedo",   "Belet Xaawo",           "26,000",           12301,
+         "Jubaland",     "Middle Juba",       "Bu'aale",           "12,635",           73057,
+         "Jubaland",      "Lower Juba",       "Afmadow",           "32,776",           12875,
+         "Jubaland",            "Gedo",        "Doolow",           "87,622",           97317,
+         "Jubaland",            "Gedo",    "Baardheere",           "54,017",           42306,
+         "Jubaland",            "Gedo",   "Garbahaarey",           "14,161",           36694,
+         "Jubaland",      "Lower Juba",       "Jamaame",           "38,962",          140167,
+         "Jubaland",     "Middle Juba",         "Jilib",           "15,311",           49067,
+         "Jubaland",      "Lower Juba",      "Kismaayo",           "88,606",           22068,
+         "Jubaland",            "Gedo",          "Luuq",           "25,225",          103580,
+         "Jubaland",     "Middle Juba",        "Saakow",           "13,108",           17170,
+          "Putland",            "Bari",       "Bossaso",          "157,114",             180,
+          "Putland",          "Nugaal",      "Burtinle",           "19,093",           13020,
+          "Putland",          "Nugaal",       "Garoowe",           "66,218",            5100,
+          "Putland",            "Bari",       "Qandala",                "-",             110,
+          "Putland",            "Bari",        "Qardho",           "30,849",           62101,
+          "Putland",            "Bari",   "Bandarbeyla",            "4,546",             212,
+       "South West",             "Bay",      "Baydhaba",          "362,560",           45301,
+       "South West",  "Lower Shabelle",       "Afgooye",           "86,438",          101914,
+       "South West",          "Bakool",    "Ceel Barde",           "16,029",             720,
+       "South West",  "Lower Shabelle",  "Kurtunwaarey",            "9,609",           20742,
+       "South West",  "Lower Shabelle",         "Marka",           "55,196",            5201,
+       "South West",  "Lower Shabelle",     "Qoryooley",           "12,873",           19431,
+       "South West",  "Lower Shabelle",    "Wanla Weyn",           "36,475",           18247,
+       "South West",          "Bakool",         "Xudur",           "21,028",             412
+     )
+```
+
+
+```{r eval=FALSE}
+# quick output for QGIS mapping
+fp_swalim <-   file.path(
+    Sys.getenv("AA_DATA_DIR"),
+    "public",
+    "raw",
+    "som",
+    "swalim"
+    
+    
+  )
+gdb_swalim_flood <-  file.path(fp_swalim,"FloodProneAreas_ElninoFloodForecast_HQ100Floo")
+gdf_fl_swalim<- st_read(gdb_swalim_flood,"FloodProneAreas_ElninoFloodForecast_HQ100Floo")
+gdf_fl_swalim<- st_make_valid(gdf_fl_swalim)
+st_intersection(gdf_fl_swalim,
+                som_adm$adm2) 
+gdf_fl_swalim_adm2<- st_intersection(
+  som_adm$adm2,
+  gdf_fl_swalim
+                ) 
+
+fao_swalim_flooded_adm2 <- gdf_fl_swalim_adm2$adm2_pcode %>% 
+  unique()
+
+df_adm2_stats <- exact_extract(x = r_pop_exposed_seas_baselines,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode")
+                                )
+
+df_adm1_stats <- df_adm2_stats %>% 
+  group_by(adm1_en,adm1_pcode) %>% 
+  summarise(
+    across(starts_with("sum"),sum),
+    .groups="drop"
+  ) 
+
+df_adm1_erp <- df_adm2_erp %>% 
+  group_by(adm1_en ) %>% 
+  mutate(
+    hrp_target_2023= parse_number(str_replace_all(`2023.HRP.Target`,",",""))
+  ) %>% 
+  summarise(
+    across(where(is.numeric),sum)
+  ) %>% 
+    arrange(desc(Flood.Affected)) %>% 
+  mutate(
+    flood_rank = row_number()
+  )
+df_adm1_erp %>% 
+  left_join(
+    df_adm1_stats
+  ) %>%
+  clean_names() %>% 
+  select(
+    adm1_en,
+    erp_affected= flood_affected,
+    fs_mam_baseline_effected = sum_mam_baseline,
+    fs_ond_baseline_effected = sum_ond_baseline,
+  ) %>% 
+  mutate(
+    erp_rank = dense_rank(desc(erp_affected)),
+    fs_mam_rank = dense_rank(desc(fs_mam_baseline_effected)),
+    fs_ond_rank = dense_rank(desc(fs_ond_baseline_effected))
+  )
+df_adm1_stats %>% 
+  left_join(
+    df_adm1_erp
+  ) %>%
+  clean_names() %>% 
+  select(
+    adm1_en,
+    erp_affected= flood_affected,
+    fs_mam_baseline_effected = sum_mam_baseline,
+    fs_ond_baseline_effected = sum_ond_baseline,
+  ) %>% 
+  arrange(desc(fs_mam_baseline_effected)) %>% 
+  mutate(
+    erp_rank = dense_rank(desc(erp_affected)),
+    fs_mam_rank = dense_rank(desc(fs_mam_baseline_effected)),
+    fs_ond_rank = dense_rank(desc(fs_ond_baseline_effected))
+  )
+
+
+
+
+som_adm$adm2 %>% 
+  mutate(
+    area= st_area(.)
+  ) %>% 
+  left_join(
+   df_adm2_stats %>% 
+     mutate(
+       lgl_swalim_100yr = adm2_pcode %in%fao_swalim_flooded_adm2
+     )
+  ) %>% 
+  mutate(
+    mam_exposed_pct = sum.MAM_baseline/area,
+    ond_exposed_pct = sum.OND_baseline/area
+  ) %>% 
+  st_write(
+    "som_flood.gpkg",
+    layer = "adm2_flood_pop_mam_ond",
+    delete_layer = T
+  )
+
+
+
+
+```
+
+
+
+
+```{r}
+library(tidyterra)
+library(gghdx)
+gghdx()
+
+adm1_labs <- som_adm$adm1 %>% 
+  mutate(
+       CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1),
+    COORDS_Y = map_dbl(COORDS, 2)
+  )
+adm2_labs <- som_adm$adm2 %>% 
+  mutate(
+       CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1),
+    COORDS_Y = map_dbl(COORDS, 2)
+  )
+
+values(r_pop_exposed_seas_baselines[[2]] ) %>% 
+  data.frame() %>% 
+  ggplot(aes(
+    x= OND_baseline
+  ))+
+  geom_histogram()+
+  scale_x_continuous(trans = scales::pseudo_log_trans())
+
+r_plot_pop_exposed_seas_baselines <- deepcopy(r_pop_exposed_seas_baselines)
+r_plot_pop_exposed_seas_baselines[r_plot_pop_exposed_seas_baselines<10] <- NA
+RColorBrewer::brewer.pal("YlGnBu",n=7)
+ggplot()+
+  geom_spatraster(data=r_plot_pop_exposed_seas_baselines)+
+  # scale_fill_gradient(
+  #   trans= scales::pseudo_log_trans(),
+    # na.value = NA,
+    # low = "white",
+    # high="red",
+  #   breaks = c(0,1,10,500),
+  #   name="Population\nExposed"
+  #   ) +
+  scale_fill_stepsn(
+    trans= scales::pseudo_log_trans(),
+    colours=c(RColorBrewer::brewer.pal("YlGnBu",n=3)),
+    breaks= c(10,25,50,100),
+    na.value=NA
+  )+
+  # scale_fill_binned(
+  #       na.value = NA,
+  #   low = "white",
+  #   mid="orange",
+  #   high="darkred",
+  #   breaks= c(0,1,5,10,20,50,100,150,200),
+  #   name= "Population Exposed"
+  # )+
+    facet_wrap(~lyr)+
+  geom_sf(data=som_adm$adm2, 
+          fill= NA,
+          color=alpha("lightgrey",0.2),
+          lwd=0.5
+          )+
+  geom_sf(data=som_adm$adm1, 
+          fill= NA,
+          color="grey",
+          lwd=0.6)+
+  geom_sf(data=som_adm$adm0, 
+          fill= NA,
+          color="black")+
+   geom_text_repel(
+    data= adm1_labs,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm1_en
+    ),
+     size= 6,
+    color="black"
+  )+
+  labs(
+    title = "Average Flood Exposure Per Year (1998-2016)",
+    subtitle = "Somalia",
+      caption = "Cumulative flood exposure calculated per year and multiplied by world pop 2020 UN adjusted raster to calculate total exposure per year. The average exposure was then calculated between 1998-2016."
+  )+
+  theme_hdx()+
+  theme(
+    plot.background = element_rect(color="white",fill="white"),
+    plot.title = element_text(size=24),
+    plot.subtitle = element_text(size=20),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.text = element_blank(),
+    axis.title=element_blank(),
+    axis.line=element_blank(),
+    plot.caption=element_text(hjust= 0, size= 10),
+    legend.key.size = unit(0.1, "in"),
+  )
+ggsave(filename = "teset.png",width = 5,height = 6,units = "in",dpi = 300)
+```
+
+
+```{r}
+
+con <- DBI::dbConnect(RPostgres::Postgres(),
+                      dbname = "global_gdb",
+                      # user      = rstudioapi::askForPassword("Database user"),
+                      # password      = rstudioapi::askForPassword("Database password"),
+                      port     = 5432)
+
+DBI::dbListTables(con)
+gdf_h2r<- st_read(con, "som_h2r_feb_drought_indicators" )
+
+
+# Baidoa zoom in 
+gdf_adm1_bay <- som_adm$adm1 %>% 
+  filter(adm1_en=="Bay") 
+  
+bbox_adm1_bay <- gdf_adm1_bay %>% 
+  st_bbox()
+  
+gdf_bbox_adm1_bay <- bbox_adm1_bay %>% 
+  st_as_sfc()
+
+gdf_ch_adm1_bay <- gdf_adm1_bay %>% 
+  st_convex_hull()
+
+gdf_h2r_crop = st_crop(gdf_h2r,gdf_bbox_adm1_bay)
+
+ggplot()+
+  geom_spatraster(data=r_plot_pop_exposed_seas_baselines)+
+  scale_fill_stepsn(
+    trans= scales::pseudo_log_trans(),
+    colours=c(RColorBrewer::brewer.pal("YlGnBu",n=3)),
+    breaks= c(10,25,50,100),
+    na.value=NA
+  )+
+    facet_wrap(~lyr)+
+  geom_sf(data=som_adm$adm2, 
+          fill= NA,
+          color=alpha("lightgrey",0.2),
+          lwd=0.5
+          )+
+  geom_sf(data=som_adm$adm1, 
+          fill= NA,
+          color="grey",
+          lwd=0.6)+
+  geom_sf(data=som_adm$adm0, 
+          fill= NA,
+          color="black")+
+  geom_sf(
+    data= gdf_h2r_crop,
+    color= alpha("lightgrey",0.5),
+    size= 0.3, alpha= 0.5, shape=4
+  )+
+   geom_text_repel(
+    data= st_crop(adm2_labs,gdf_ch_adm1_bay),
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm2_en
+    ),
+     size= 4,
+    color="black"
+  )+
+   geom_text_repel(
+    data= st_crop(adm1_labs,gdf_bbox_adm1_bay),
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = toupper(adm1_en)
+    ),
+     size= 8,
+    color="grey"
+  )+
+    coord_sf(
+    xlim=c(adm1_bay[["xmin"]],adm1_bay[["xmax"]]),
+    ylim=c(adm1_bay[["ymin"]],adm1_bay[["ymax"]]),
+    )+
+  labs(
+    title = "Average Flood Exposure Per Year (1998-2016)",
+    subtitle = "Somalia",
+      caption = "Cumulative flood exposure calculated per year and multiplied by world pop 2020 UN adjusted raster to calculate total exposure per year. The average exposure was then calculated between 1998-2016."
+  )+
+  theme_hdx()+
+  theme(
+    plot.background = element_rect(color="grey",fill="white"),
+    panel.background = element_rect(color="grey", fill=NA),
+    plot.title = element_text(size=24),
+    plot.subtitle = element_text(size=20),
+    panel.grid = element_blank(),
+    # panel.border = ele(),
+    axis.text = element_blank(),
+    axis.title=element_blank(),
+    axis.line=element_blank(),
+    plot.caption=element_text(hjust= 0, size= 10),
+    legend.key.size = unit(0.1, "in"),
+  )
+ggsave(filename = "bay.png",width = 4,height = 4,units = "in",dpi = 300)
+```
+
+
+```{R}
+
+
+
+p_map_ond_baseline <- ggplot()+
+  geom_spatraster(data=r_pop_exposed_ond_baseline_mean)+
+  scale_fill_gradient(
+    trans= scales::pseudo_log_trans(),
+    na.value = NA,
+    low = "white",
+    high="red",breaks = c(0,5,10,20,50,100,150,200),
+    name="Population\nExposed"
+    ) +
+  geom_sf(data=som_adm$adm2, 
+          fill= NA,
+          color=alpha("lightgrey",0.2),
+          lwd=0.5
+          )+
+  geom_sf(data=som_adm$adm1, 
+          fill= NA,
+          color="grey",
+          lwd=0.6)+
+  geom_sf(data=som_adm$adm0, 
+          fill= NA,
+          color="black")+
+   geom_text_repel(
+    data= adm1_labs,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm1_en
+    ),
+     size= 6
+  )+
+  labs(
+    title = "Average Flood Exposure Per Year (1998-2016)",
+    subtitle = "Somalia"
+  )+
+  theme_hdx()+
+  theme(
+    plot.background = element_rect(color="white",fill="white"),
+    plot.title = element_text(size=20),
+    plot.subtitle = element_text(size=18),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.text = element_blank(),
+    axis.title=element_blank(),
+    axis.line=element_blank()
+  )
+```
+
+
+
+```{r}
+
+
+
+
+#rstack 
+rs_pop_exposed <- split_rstack_baseline(r_fs_yr_wp,baseline_years = baseline_years)
+r_pop_exposed_baseline_mean <- mean(rs_pop_exposed$baseline)
+
+rs_flood_frac <-  split_rstack_baseline(r = r_fs_yearly_max_crop,baseline_years = baseline_years)
+r_flood_frac_baseline <-  mean(rs_flood_frac$baseline)
+
+```
+
+```{r}
+library(tidyterra)
+library(gghdx)
+gghdx()
+
+adm1_labs <- som_adm$adm1 %>% 
+  mutate(
+       CENTROID = map(geometry, st_centroid),
+    COORDS = map(CENTROID, st_coordinates),
+    COORDS_X = map_dbl(COORDS, 1),
+    COORDS_Y = map_dbl(COORDS, 2)
+  )
+
+
+ggplot()+
+  geom_spatraster(data=r_pop_exposed_baseline_mean)+
+  scale_fill_gradient(
+    trans= scales::pseudo_log_trans(),
+    na.value = NA,
+    low = "white",
+    high="red",breaks = c(0,5,10,20,50,100,150,200),
+    name="Population\nExposed"
+    ) +
+  geom_sf(data=som_adm$adm2, 
+          fill= NA,
+          color=alpha("lightgrey",0.2),
+          lwd=0.5
+          )+
+  geom_sf(data=som_adm$adm1, 
+          fill= NA,
+          color="grey",
+          lwd=0.6)+
+  geom_sf(data=som_adm$adm0, 
+          fill= NA,
+          color="black")+
+   geom_text_repel(
+    data= adm1_labs,
+    mapping = aes(
+      x = COORDS_X,
+      y = COORDS_Y,
+      label = adm1_en
+    ),
+     size= 6
+  )+
+  labs(
+    title = "Average Flood Exposure Per Year (1998-2016)",
+    subtitle = "Somalia",
+    caption = "Cumulative flood exposure calculated per year and multiplied by world pop 2020 UN adjusted raster to calculate total exposure per year. The average exposure was then calculated between 1998-2016"
+  )+
+  theme_hdx()+
+  theme(
+    plot.background = element_rect(color="white",fill="white"),
+    plot.title = element_text(size=20),
+    plot.subtitle = element_text(size=18),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    axis.text = element_blank(),
+    axis.title=element_blank(),
+    axis.line=element_blank()
+  )
+ggsave(filename = "teset.png",width = 5,height = 6,units = "in",dpi = 300)
+```
+
+
+4. From the new rasters we can simply run zonal sums per admin zone of interest. Here we do it mainly by admin 1.
+
+```{r calcZonalStats}
+
+# Monthly Pop Exposed Per Admin 1
+df_adm1_mo_pop_exposed<- exact_extract(x = r_fs_mo_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.") %>% 
+  mutate(
+    date= as_date(date)
+  )
+
+# Monthly Pop Exposed per Admin 2
+df_adm2_mo_pop_exposed<- exact_extract(x = r_fs_mo_wp,
+                                y = som_adm$adm2, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode","adm2_en","adm2_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.")%>% 
+  mutate(
+    date= as_date(date)
+  )
+
+
+# Yearly Pop Exposed per Admin 1
+df_adm1_yr_pop_exposed <- exact_extract(x = r_fs_yr_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.") %>% 
+  mutate(
+    date= as_date(date)
+  )
+
+
+
+# World Pop Adin 1 Stats (Population per admin 1)
+df_adm1_wp<- exact_extract(x = r_wp,
+                                y = som_adm$adm1, 
+                                fun ="sum",
+                                append_cols= c("adm1_en","adm1_pcode")
+                                ) %>% 
+  pivot_longer(-matches("adm")) %>%
+  separate(name,
+           into = c("stat", "date"),
+           sep = "\\.") %>% 
+  mutate(date=as_date(date))
+
+
+```
+
+## Plot Population Exposed per Month
+```{r plot-monthlyExposedAdm1, results= "asis"}
+# Population expose
+df_adm1_mo_pop_exposed %>% 
+  ggplot(
+    aes(x= date, y = value, group=adm1_en)
+    )+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs(title = "Monthly population exposed to flooding",
+       y= "Population exposed",
+       caption= "Population: World Pop\nFlood: FloodScan")+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90, size=7),
+    axis.title.x =  element_blank(),
+    plot.caption = element_text(hjust=0 , size=7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+## Plot Population Exposed per year
+
+```{r plot-yearlyExposedAdm1, results="asis"}
+df_adm1_yr_pop_exposed %>% 
+  ggplot(aes(x= date, y = value, group=adm1_en))+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs(title = "Yearly population exposed to flooding",
+       y= "Population exposed",
+       caption= "Population: World Pop\nFlood: FloodScan")+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+## Flood Exposure Anomalies
+
+From the admin level population exposed rasters we can easily calculate two types of anomalies:
+
+1. Monthly difference from mean expsure
+2. Monthly Z-score (difference from mean/ standard deviation)
+
+```{r calcFloodExposureAnom}
+# calc anomaly
+df_adm1_mo_pop_exposed_anom <- df_adm1_mo_pop_exposed %>% 
+  mutate(
+    mo = month(date, label=T)
+  ) %>% 
+  group_by(adm1_en, adm1_pcode, mo) %>% 
+  mutate(
+    mean = mean(value),
+    stdev = sd(value),
+    diff_mean = value-mean,
+    z_score = diff_mean/stdev
+  ) %>% 
+  ungroup()
+```
+
+### Plot difference from mean exposure
+
+```{r plot-monthlyDiffAnomaly,results="asis"}
+# difference from mean anomaly
+df_adm1_mo_pop_exposed_anom %>% 
+  ggplot(aes(x= date, y = diff_mean, group=adm1_en))+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+    labs(title = "Monthly Flood Exposure Anomaly",
+       y= "Population exposed Anomaly (difference from average)",
+       caption= "Population: World Pop\nFlood: FloodScan"
+       )+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+### Plot Exposure Anomaly (Z-score)
+
+```{r plot-MonthlyZscore, results="asis"}
+
+df_adm1_mo_pop_exposed_anom %>% 
+  ggplot()+
+  geom_line(
+    aes(x= date,
+        y = z_score,
+        group=adm1_en)
+  )+
+  scale_y_continuous(
+    labels = scales::label_comma()
+  )+
+  labs(title = "Monthly Flood Exposure Anomaly",
+       y= "Population exposed Anomaly (Z-score)",
+       caption= "Population: World Pop\nFlood: FloodScan"
+       )+
+  facet_wrap(~adm1_en)+
+  geom_rect(
+    data= df_el_nino_years,
+    aes(
+      xmin = start_date,
+      xmax = end_date,
+      ymin = -Inf,
+      ymax = Inf
+    ),
+    alpha = 0.2,
+    fill = hdx_hex("tomato-hdx")
+  )+
+    scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y",
+    limits = c(min(df_adm1_mo_pop_exposed_anom$date),as_date("2025-06-01")),
+    expand = c(0,0)
+  )+
+  theme(
+   axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+# Appendix
+
+## FloodScan WorldPop Exposure Vs PRMN
+
+```{r readPRMN}
+
+dir_som_pub_raw <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "public",
+  "raw",
+  "som")
+
+fp_prmn <- file.path(dir_som_pub_raw,
+          "prmn",
+          "UNHCR-PRMN-Displacement-Dataset.xlsx"
+          )
+df_prmn <- read_xlsx(fp_prmn) %>% 
+  clean_names()
+
+df_prmn <-  df_prmn %>% 
+  filter(reason=="Flood") %>% 
+  mutate(
+    date= dmy(month_end),
+    yr_mo = floor_date(date, "month"),
+    .before= everything()
+  )
+
+df_prmn_adm1_mo <- df_prmn %>% 
+  group_by(
+    adm1_en = current_arrival_region,
+    date= yr_mo
+    ) %>% 
+  summarise(
+   number_of_individuals= sum(number_of_individuals,na.rm=T) ,
+   .groups="drop"
+  )
+```
+
+
+```{r joinFloodScanPRMN}
+df_fs_prmn <- df_adm1_mo_pop_exposed_anom %>% 
+  left_join(
+    df_prmn_adm1_mo,
+    by = c("date"="date",
+           "adm1_en"="adm1_en")
+  ) 
+```
+
+```{r plot-FloodScanVsPrmn, fig.height=9, results="asis"}
+df_fs_prmn %>% 
+  ggplot(aes(x= value, y= number_of_individuals))+
+  geom_point(size=0.7)+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_continuous(labels = scales::label_comma())+
+  labs(
+    title = "Floodscan/World Pop vs PRMN Displacement by Admin 1",
+    x= "Pop Exposure (FloodScan + World Pop)",
+    y= "Number Displaced (PRMN)",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  facet_wrap(~adm1_en, scale="free")+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+  )
+```
+
+
+```{r, eval =F}
+df_fs_prmn_seas <- df_fs_prmn %>% 
+  mutate(
+    seas = case_when(
+      month(date) %in% c(3,4,5)~"MAM",
+      month(date)%in% c(10,11,12)~"OND"
+    )
+  ) %>% 
+  filter(!is.na(seas)) %>% 
+  group_by(across(matches("adm")),
+                  yr=floor_date(date,"year"),seas) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals,na.rm=T),
+    mean_z= mean(z_score),
+    max_z= max(z_score),.groups="drop"
+  ) 
+
+
+df_fs_prmn_seas %>% 
+  filter(seas== "MAM") %>% 
+  ggplot(aes(x= mean_z, y= number_of_individuals))+
+  geom_point()+
+  facet_wrap(~adm1_en, scales="free")
+
+
+df_fs_prmn_seas %>% 
+  filter(seas== "OND") %>% 
+  ggplot(aes(x= mean_z, y= number_of_individuals))+
+  geom_point()+
+  facet_wrap(~adm1_en,scales = "free")
+
+# max OND
+df_fs_prmn_seas %>% 
+  filter(seas== "OND") %>% 
+  ggplot(aes(x= max_z, y= number_of_individuals))+
+  geom_point()+
+  facet_wrap(~adm1_en,scales="free")
+```
+
+
+## Baidoa case study
+```{r wrangleBaidoa}
+df_prmn_baidoa_fs <- 
+  left_join(
+    df_adm2_mo_pop_exposed %>% 
+      filter(year(date)>=2016,
+             adm2_en=="Baydhaba") ,
+  df_prmn %>% 
+  filter(
+   previous_departure_district== "Baidoa"
+  ) %>% 
+     group_by(date= yr_mo) %>% 
+  summarise(
+    number_of_individuals= sum(number_of_individuals,na.rm=T)
+  ) ,
+  by = c("date"="date")
+  )
+```
+
+### Plot - Pop displaced & Exposed
+```{r plot-BaidoaPopExposed,results="asis"}
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, `PRMN Displaced individuals`=number_of_individuals, `FloodScan + WorldPop Displaced` =value
+  ) %>% 
+  pivot_longer(`PRMN Displaced individuals`:`FloodScan + WorldPop Displaced`,
+               names_to = "variable",
+               values_to = "value") %>% 
+  ggplot(
+    aes(x= date, 
+        y= value, 
+        fill= variable, 
+        group= variable, 
+        color = variable
+    )
+    
+    )+
+  geom_point(alpha=0.8)+
+  geom_line(alpha=0.5)+
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y")+
+    labs(
+    title = "Baidoa - PRMN Displacement and FloodScan/WorldPop Exposure",
+    y= "Exposed/Displaced",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  theme(
+   axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+   
+  )
+```
+
+### Plot - Pop displaced & Exposed
+```{r plot-BaidoaDualPopExposed,results="asis"}
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, number_of_individuals, value
+  ) %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+    )+
+  geom_point()+
+  geom_line()+
+   geom_vline(
+     data = . %>% 
+       filter(!is.na(number_of_individuals)),
+    aes(xintercept = date), 
+    color="red",alpha= 0.3
+  )+
+  geom_line(
+    data= df_prmn_baidoa_fs,
+    aes(x= date, y= value/10),
+    color = hdx_hex("mint-hdx")
+  )+
+  scale_y_continuous(
+    sec.axis = sec_axis(~.*10, name = "WorldPop Exposure (thousands)")
+    )+
+  scale_x_date(
+    date_breaks = "1 month",
+    date_labels = "%b%y", 
+    limits = as_date(c("2016-01-01","2022-12-01")),expand = c(0,0)
+    )+
+  labs(
+    y= "PRMN - Number of Individuals",
+    title= "Somalia Baidoa - Displaced vs Flood Exposure",
+    subtitle = "Blue dots and vertical red lines indicate PRMN Flood Displacement",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+    
+  )
+```
+
+### Plot - Pop displaced & Exposed (pseudolog)
+```{r plot-BaidoaDualPopExposedPseudo,results="asis"}
+df_prmn_baidoa_fs  %>% 
+  select(
+    adm2_en, date, number_of_individuals, value
+  ) %>% 
+  ggplot(
+    aes(x= date, y= number_of_individuals)
+    )+
+  geom_point()+
+  geom_line()+
+   geom_vline(
+     data = . %>% 
+       filter(!is.na(number_of_individuals)),
+    aes(xintercept = date), 
+    color="red",alpha= 0.3
+  )+
+  geom_line(
+    data= df_prmn_baidoa_fs,
+    aes(x= date, y= value/10)
+  )+
+  scale_y_continuous(
+    trans = scales::pseudo_log_trans(),
+    breaks = c(05,25,50,seq(100,1000, 200),2000,3000,9000),
+    sec.axis = sec_axis(
+      ~.*10, 
+      name = "WorldPop Flood Exposure (thousands)",
+      breaks= c(50,250,500,1000,10000,20000,30000,60000,90000)
+      )
+    )+
+  scale_x_date(date_breaks = "1 month", date_labels = "%b%y")+
+  labs(
+    y= "PRMN - Number of Individuals",
+    title= "Somalia Baidoa - Displaced vs Flood Exposure",
+    subtitle = "Blue dots and vertical red lines indicate PRMN Flood Displacement",
+    caption= "Population: World Pop\nFlood: FloodScan\nDisplacement: UNHCR PRMN"
+  )+
+    theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle=90),
+    axis.text.y = element_text(size= 8),
+    axis.title.x =  element_blank(),
+    axis.title.y =  element_text(size=8),
+    plot.caption = element_text(hjust=0, size= 7),
+    strip.text = element_text(size=9),
+    panel.background = element_rect(color="grey",fill=NA)
+    
+  )
+  
+  
+```
+
+
+```{r animationSetup}
+gdf_adm1_yr_pop_exposed <- som_adm$adm1 %>% 
+  left_join(
+    df_adm1_yr_pop_exposed,
+    by = c("adm1_en"="adm1_en")
+  ) 
+
+# use ggplot2 to create a map using gdf_adm1_fly_yr
+# I want to fill by the `value` column and I want to 
+# annimate with gganimate by the `date` column
+
+
+# this produces : Error: arguments have different crs 
+# devtools::install_github("thomasp85/transformr")
+# animate so that the color of the fill changes value based on date
+# go through all the dates
+# https://github.com/thomasp85/gganimate/issues/479
+
+# create a ggplot object
+p <- gdf_adm1_yr_pop_exposed %>% 
+  ggplot() +
+  geom_sf(aes(fill=value)) +
+  scale_fill_viridis_c() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  # transition_states and make each state last 1 second 
+  transition_states(states = date,
+                    # state_length = 2,
+                    wrap = FALSE) +
+  labs(title = "Flooding Exposure - {closest_state}",
+       subtitle = "World Pop + Floodscan",
+       fill = "Population Exposed"
+       )
+
+map_gif <- animate(p, 
+        fps = 2,
+        width = 800,
+        height = 600)
+
+
+# create ggplot line plot that adds a new year of data every time from df_zonal_fl_pop_yr 
+# and animate with gganimate
+
+p_facet_plot <- df_adm1_yr_pop_exposed %>% 
+  mutate(
+    date= as_date(date)
+  ) %>% 
+  ggplot(aes(x= date, y = value))+
+  geom_line()+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_x_date(
+    date_breaks = "1 year",
+    date_labels= "%y"
+  )+
+  labs()+
+  facet_wrap(~adm1_en)+
+  theme(
+    axis.text.x = element_text(angle=90),
+    axis.title.x =  element_blank()
+  )+
+  transition_reveal(date)
+
+plot_gif <- animate(p_facet_plot, 
+        fps = 2,
+        width = 800,
+        height = 600)
+
+
+
+map_mgif <- image_read(map_gif)
+plot_mgif <- image_read(plot_gif)
+length(map_mgif)
+length(plot_mgif)
+
+
+new_gif <- image_append(c(map_mgif[1], plot_mgif[1]))
+
+for(i in 2:92){
+  print(i)
+  combined <- image_append(c(map_mgif[i], plot_mgif[i]))
+  new_gif <- c(new_gif, combined)
+}
+```
+
+```{r FunAnimation,results= "asis"}
+new_gif
+```
+
+
+
+
+
+
