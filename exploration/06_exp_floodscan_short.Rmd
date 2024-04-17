@@ -44,7 +44,7 @@ library(magick)
 library(ggridges)
 source(here("R/utils_floodscan.R"))
 gghdx()
-
+buffer_som <-  c(T,F)[1] # this is just really for the viz files shared later
 som_adm0_levels <- c(
   "som_admbnda_adm0_ocha_20230308",
   "som_admbnda_adm1_ocha_20230308",
@@ -80,10 +80,19 @@ dir_ocha_explore <- file.path(
   
 )
 
+dir(dir_ocha_explore)
 df_ocha_pop <- readxl::read_xlsx(
   path = file.path(dir_ocha_explore,"2024 Population Disaggregation.xlsx" ),
   sheet="Humanitarian Plannning 2024 pop",skip = 1
   ) %>% 
+  clean_names()
+
+df_ocha_pin <- readxl::read_xlsx(
+  path = file.path(dir_ocha_explore,
+                   "Workspace_3A-3B_PIN&Sev_2023-10-24_district level.xlsx"),
+  sheet = "WS - 3.1 Overall PiN",
+  skip=2
+) %>% 
   clean_names()
 
 
@@ -97,11 +106,22 @@ fp_fs <-   file.path(
     "floodscan_flooded_fraction_africa_19980112-20221231_p00",
     "aer_sfed_area_300s_19980112_20221231_v05r01.nc"
   )
-
+som_bbox <- st_bbox(som_adm$adm0) %>% 
+  st_as_sfc()
+plot(som_bbox)
+plot(som_adm$adm0$geometry,add= T)
 
 
 tnc_fs <- tidync(fp_fs)
-tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,geometry = som_adm$adm0)
+tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,
+                                geometry = som_adm$adm0
+                                )
+if(buffer_som){
+  tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,
+                                geometry = st_buffer(som_adm$adm0,10000)
+                                )
+}
+
 r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
 
 dir_wp <-  file.path(
@@ -239,7 +259,9 @@ r_fs_yr_wp<- r_fs_yearly_resampled * r_wp
 
 
 
-Can we create a baseline?
+4. Can we create a flood frac baseline?
+
+The seasonal flood rasters produced here can be reclassified an polygonized as well (to share w/ SOM OCHA team)
 ```{r}
 baseline_years <-  1998:2016
 fs_lookup_seas <- fs_lookup %>% 
@@ -279,6 +301,54 @@ r_fs_seas_max_resampled <- terra::resample(x = r_fs_seas_max_crop,r_wp)
 
 r_fs_seas_mam_max <- r_fs_seas_max_resampled[[month(names(r_fs_seas_max_resampled)) %in% 3]]
 r_fs_seas_ond_max <- r_fs_seas_max_resampled[[month(names(r_fs_seas_max_resampled)) %in% 10]]
+```
+
+```{r}
+r_fs_flood_frac_mam_avg <- mean(r_fs_seas_mam_max)
+plot(r_fs_flood_frac_mam_avg)
+plot(som_adm$adm0$geometry,add= T, fill=NULL)
+
+r_fs_flood_frac_mam_avg_clip <- terra::mask(
+  x = r_fs_flood_frac_mam_avg,
+  st_buffer(som_adm$adm0,10000)
+  )
+
+# same as I did on initial slide visualization
+r_fs_flood_frac_mam_avg_clip[r_fs_flood_frac_mam_avg_clip<=0.02] <- NA
+plot(r_fs_flood_frac_mam_avg_clip)
+plot(st_buffer(som_adm$adm0,10000)$geometry,add= T, fill=NULL)
+
+poly_fs_flood_frac_mam_avg <- terra::as.polygons(r_fs_flood_frac_mam_avg_clip)
+plot(poly_fs_flood_frac_mam_avg,add=T)
+plot(r_fs_flood_frac_mam_avg_clip, add=T)
+
+dir.create("gis_files_share")
+poly_fs_flood_frac_mam_sf <- poly_fs_flood_frac_mam_avg %>% 
+  st_as_sf() %>% 
+  summarise()
+plot(r_fs_flood_frac_mam_avg_clip)
+plot(poly_fs_flood_frac_mam_sf$geometry,add=T)
+plot(som_adm$adm0$geometry,add=T, fill=NULL)
+st_write(poly_fs_flood_frac_mam_sf,"gis_files_share/SOM_MAM_1998_2016_FloodScan_SFED_baseline_extent.shp")
+
+
+r_fs_flood_frac_mam_avg_clip %>% 
+    values() %>%  
+  data.frame() %>% 
+  pivot_longer(everything()) %>% 
+  filter(!is.na(value)) %>% 
+  ggplot(aes(x= value))+
+  geom_histogram()+
+  # scale_x_log10(
+  #   labels= scales::label_percent()
+  # )+
+  labs(
+    title = "Distribution of all non-zero flood fraction pixel values (FloodScan)"
+  )+
+  theme(
+    axis.title.x = element_blank()
+  )
+```
 ```
 
 # Combine WorldPop & FloodScan
@@ -431,13 +501,16 @@ df_adm1_historical_exposure_stats_thresh %>%
   )
 
 
-qt_50_80<- df_adm1_historical_exposure_stats_thresh %>% 
+df_adm1_historical_exposure_stats_thresh %>% 
   ggplot(
     aes(x= pop_exposed,y = adm1_en)
   )+
   geom_boxplot()+
   scale_x_continuous(
     labels= scales::comma
+  )+
+  labs(
+    
   )
 
 df_qt_50_80 <- df_adm1_historical_exposure_stats_thresh %>% 
@@ -533,6 +606,9 @@ df_adm1_methods_joined %>%
   ))
 
 ```
+
+
+
 
 
 ### Historical Exposure Distributions at Admin 2
@@ -634,23 +710,45 @@ df_adm2_both_seas_thresh_pop_adj <- df_adm2_historical_both_seas_thresh %>%
     pop_exposed_24 = pop_24*pct_exposed
   )
 
-
-
-
-# this is how we would aggregate... to match - could be better
-df_adm1_historical_both_seas_pop_adj <- df_adm2_both_seas_thresh_pop_adj %>% 
+df_adm1_pt_estimates_map <- df_adm2_both_seas_thresh_pop_adj %>% 
   group_by(
     across(starts_with("adm1")),date
-    ) %>% 
+  ) %>% 
   summarise(
-    pop_wp = sum(pop),
-    pop_24= sum(pop_24),
-    pop_exposed_wp = sum(pop_exposed),
-    pop_exposed_24 = sum(pop_exposed_24),
-    pct_pop_exposed_24 = pop_exposed_24/pop_24,
-    .groups="drop"
-  )
-  
+    pop_exposed_24= sum(pop_exposed_24),
+    pop_24 = sum(pop_24),
+    .groups="drop_last"
+  ) %>% 
+  group_by(mo = month(date),.add=T) %>% 
+  summarise(
+    mean_pop_exposed = mean(pop_exposed_24),
+    pop_24 = unique(pop_24),
+    .groups="drop_last"
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    mean_pct_exposed = mean_pop_exposed/pop_24,
+    seas_label = if_else(mo ==3,"MAM","OND")
+  ) %>%
+  select(-pop_24,-mo) %>% 
+  pivot_wider(names_from= seas_label,
+              values_from= c("mean_pop_exposed","mean_pct_exposed"))
+
+
+# # this is how we would aggregate... to match - could be better
+# df_adm2_historical_both_seas_pop_adj <- df_adm2_both_seas_thresh_pop_adj %>% 
+#   group_by(
+#     across(starts_with("adm")),date
+#     ) %>% 
+#   summarise(
+#     pop_wp = sum(pop),
+#     pop_24= sum(pop_24),
+#     pop_exposed_wp = sum(pop_exposed),
+#     pop_exposed_24 = sum(pop_exposed_24),
+#     pct_pop_exposed_24 = pop_exposed_24/pop_24,
+#     .groups="drop"
+#   )
+#   
 # oth seas at once
 df_adm1_historical_pop_adj <- df_adm2_historical_exposure_stats_thresh_pop_adj %>% 
   group_by(
@@ -664,7 +762,6 @@ df_adm1_historical_pop_adj <- df_adm2_historical_exposure_stats_thresh_pop_adj %
     pct_pop_exposed_24 = pop_exposed_24/pop_24,
     .groups="drop"
   )
-
 
 
 df_adm1_exposed_mean_pop_adj <- df_adm1_historical_pop_adj %>% 
@@ -711,6 +808,7 @@ df_adm1_flood_quantiles_both_seas <- df_adm1_historical_both_seas_pop_adj %>%
     quibble(pop_exposed_24,q=c(seq(0,0.95,0.05),0.99))
                             
   )
+
 
 
 
@@ -835,7 +933,25 @@ ldf_q_tbl <- df_adm1_flood_quantiles_both_seas %>%
         ) 
     }
   )
-df_q_tbl_summary<- reduce(ldf_q_tbl,left_join)  
+
+df_pin_adm2 <- df_ocha_pin %>% 
+  select(adm1_en = admin_1,
+         adm1_pcode = admin_1_p_code,
+         adm2_en = admin_2,
+         adm2_pcode = admin_2_p_code,
+         final_pin=final_pi_n) %>%
+  filter(!is.na(adm1_en))
+
+df_pin_adm1 <- df_pin_adm2 %>% 
+  group_by(adm1_en, adm1_pcode) %>% 
+  summarise(
+    final_pin = sum(final_pin,na.rm=T),.groups = "drop"
+  )
+  
+df_q_tbl_summary<- reduce(ldf_q_tbl,left_join)  %>% 
+  left_join(df_pin_adm1)
+
+
 df_q_tbl_summary %>% 
   select(-adm1_pcode) %>% 
   gt() %>% 
@@ -845,7 +961,12 @@ df_q_tbl_summary %>%
     ond_pct_25_75="% Estimates (25-75th percentile)",
     mam_pop_50_95="Population Estimates (50-95th percentile)",
     mam_pct_50_95= "% Estimates (50-95th percentile)",
+    final_pin = "PiN"
   ) %>% 
+  fmt_number(
+    columns = c("final_pin"),
+    decimals = 0
+  ) %>%
   tab_spanner(
     label = "MAM",
     columns = c("mam_pop_50_95","mam_pct_50_95")
@@ -855,6 +976,28 @@ df_q_tbl_summary %>%
     columns = c("ond_pop_25_75","ond_pct_25_75")
   ) 
 
+
+# for mapping
+gdf_adm1_summary_ranges <- 
+  # gdf
+  som_adm$adm1 %>% 
+  left_join(
+    # percentile ranges + PiN
+    df_q_tbl_summary %>% 
+      # pt estimates for shading
+      left_join(df_adm1_pt_estimates_map) %>% 
+      mutate(
+        mam_pct_pin = mean_pct_exposed_MAM*final_pin,
+        ond_pct_pin = mean_pct_exposed_OND*final_pin
+        )
+  )
+
+gdf_adm1_summary_ranges %>% 
+  st_write(
+    "som_flood.gpkg",
+    layer = "adm1_flood_pin_stats"
+    
+  )
 #%>% 
     #   pivot_wider(
     # names_from = q,
@@ -863,7 +1006,105 @@ df_q_tbl_summary %>%
         # select(-mo)
 ```
 
+## Quantile Ranges Admin 2 - MAM & OND
+```{r}
+df_adm1_flood_quantiles_both_seas <- df_adm1_historical_both_seas_pop_adj %>% 
+  mutate(mo= month(date)) %>% 
+  group_by(across(starts_with("adm")),mo) %>% 
+    reframe(
+    quibble(pct_pop_exposed_24,q=c(seq(0,0.95,0.05),0.99)),
+    quibble(pop_exposed_24,q=c(seq(0,0.95,0.05),0.99))
+                            
+  )
+
+
+
+df_adm2_flood_quantiles_both_seas <- df_adm2_historical_both_seas_pop_adj %>% 
+  mutate(mo= month(date)) %>% 
+  group_by(across(starts_with("adm")),mo) %>% 
+    reframe(
+    quibble(pct_pop_exposed_24,q=c(seq(0,0.95,0.05),0.99)),
+    quibble(pop_exposed_24,q=c(seq(0,0.95,0.05),0.99))
+                            
+  )
+
+
+ldf_adm2_q_tbl <- df_adm2_flood_quantiles_both_seas %>% 
+  filter(mo==10 & pct_pop_exposed_24_q %in% c(0.25,0.75)|
+         mo== 3 & pct_pop_exposed_24_q %in% c(0.5,0.95),
+         ) %>% 
+  rename(
+    q ="pct_pop_exposed_24_q"
+  ) %>% 
+  select(-ends_with("_q")) %>% 
+  split(.$mo) %>% 
+  imap(
+    \(dft,nm_mo){
+    
+      if(nm_mo==3){
+        pop_range_label = "mam_pop_50_95"
+        pct_range_label = "mam_pct_50_95"
+      }
+      if(nm_mo==10){
+       pop_range_label = "ond_pop_25_75"
+       pct_range_label = "ond_pct_25_75"
+      }
+      dft %>% 
+        group_by(across(starts_with("adm"))) %>% 
+        summarise(
+          !!pop_range_label:=
+            paste0(formatC(round(min(pop_exposed_24),-2),format="d", big.mark=",")," - ",
+            formatC(round(max(pop_exposed_24),-2),format="d", big.mark=",")
+          ),
+          !!pct_range_label:=
+            paste0(formatC(round(min(pct_pop_exposed_24*100),0),format="d", big.mark=",")," - ",
+            formatC(round(max(pct_pop_exposed_24*100),0),format="d", big.mark=",")
+          ),.groups="drop"
+        ) 
+    }
+  )
+
+
+df_adm2_q_tbl_summary<- reduce(ldf_adm2_q_tbl,left_join)  %>% 
+  left_join(df_pin_adm2) %>% 
+  select(
+    adm1_en,adm2_en, everything(), - ends_with("_pcode")
+  )
+
+df_adm2_q_tbl_summary %>% 
+  group_by(adm1_en) %>% 
+  gt() %>% 
+  gt::cols_label(
+    adm1_en= "Region",
+    adm2_en= "District",
+    ond_pop_25_75="Population Estimates (25-75th percentile)",
+    ond_pct_25_75="% Estimates (25-75th percentile)",
+    mam_pop_50_95="Population Estimates (50-95th percentile)",
+    mam_pct_50_95= "% Estimates (50-95th percentile)",
+    final_pin = "PiN"
+  ) %>% 
+  fmt_number(
+    columns = c("final_pin"),
+    decimals = 0
+  ) %>%
+  tab_spanner(
+    label = "MAM",
+    columns = c("mam_pop_50_95","mam_pct_50_95")
+  ) %>%
+  tab_spanner(
+    label = "OND",
+    columns = c("ond_pop_25_75","ond_pct_25_75")
+  ) %>% 
+  tab_options(
+    row_group.as_column = TRUE,
+    data_row.padding = px(0),
+    table.font.size = 12)
+
+```
+
 ### Figures for Flood +Severity
+
+### Adm2
 ```{r}
  
 # this one could be for mapping w/ severity
@@ -880,7 +1121,7 @@ df_adm2_historical_both_seas_pop_adj <- df_adm2_both_seas_thresh_pop_adj %>%
     .groups="drop"
   )
 
-df_adm2_historical_both_seas_pop_adj %>% 
+df_adm2_max_mam_ond_values <- df_adm2_historical_both_seas_pop_adj %>% 
   select(starts_with("adm"),mo,pct_pop_exposed_24,pop_24) %>% 
   group_by(across(starts_with("adm"))) %>% 
   summarise(
@@ -891,7 +1132,34 @@ df_adm2_historical_both_seas_pop_adj %>%
   mutate(
     pop_district_exposed = pct_district_exposed*pop_24
   )
-  
+
+adm2_map_figs_updated <- df_adm2_max_mam_ond_values %>% 
+  left_join(
+    df_pin_adm2 
+      
+  ) %>% 
+  mutate(
+    pct_pin = final_pin * pct_district_exposed
+  )
+
+
+adm2_map <- st_read(
+  dsn="som_flood.gpkg",
+  layer = "adm2_flood_pop_mam_ond")
+
+adm2_map %>% 
+  left_join(adm2_map_figs_updated) %>% 
+  st_write(
+    "som_flood.gpkg",
+    layer = "adm2_flood_pop_mam_ond",
+    delete_layer = T
+    
+    
+  )
+
+
+som_adm$adm0
+
 ```
 
 
@@ -912,6 +1180,7 @@ df_adm2_historical_exposure_stats %>%
 
 ### Box plot
 ```{r}
+
 
 df_adm2_historical_exposure_stats %>% 
   ggplot(

@@ -12,6 +12,11 @@
 *.pdf
 *.svg
 *.tif
-
+_targets/*
+SOM_Flood_Viz_Files/*
+*.zip
+maps/*
+*.gpkg
+*.xlsx
 
 
