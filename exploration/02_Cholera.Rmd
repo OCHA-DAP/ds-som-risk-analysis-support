@@ -1,0 +1,516 @@
+---
+title: "02_Cholera"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 4
+date: "2023-10-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  results = "asis"
+)
+```
+
+## Intro
+
+This office explores the cholera data shared by the somalia country OCHA office
+
+```{r cars}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(ISOweek)
+library(gghdx)
+library(ggfx)
+library(snakecase)
+library(patchwork)
+library(rhdx)
+gghdx()
+
+fp_cholera_data <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "raw",
+  "som", "Cholera data W1-51 2022.xlsx"
+)
+
+ldf_cholera <- set_names(excel_sheets(fp_cholera_data)) %>%
+  map(\(sn){
+    set_names(sn)
+    read_xlsx(fp_cholera_data, sn) %>%
+      clean_names()
+  })
+
+
+# add dates to year + week combo so we can work w/ dates
+df_weekly <- ldf_cholera$Sheet1 %>%
+  mutate(
+    w = paste0(year, "-W", formatC(epi_week, width = 2, flag = "0"), "-1"),
+    date = ISOweek2date(w),
+    .after = epi_week
+  )
+
+# pull somalia admin1
+gdf_adm1 <- search_datasets(query = "cod-ab-som") %>%
+  pluck(1) %>%
+  get_resource(2) %>%
+  # get_resource_layers() %>%
+  read_resource(layer = "som_admbnda_adm1_ocha_20230308") %>%
+  clean_names() %>%
+  select(matches("^adm\\d_"))
+```
+
+
+## National Level Cholera
+
+overview of national level weekly cholera figures 
+
+```{r}
+df_weekly %>%
+  group_by(date) %>%
+  summarise(
+    total_cases = sum(total_cases, na.rm = T)
+  ) %>%
+  ggplot(
+    aes(x = date, y = total_cases)
+  ) +
+  geom_line()
+```
+
+## Admin 1 Cholera
+
+over view of admin 1 level weekly cholera figures
+
+```{r}
+df_region_weekly <- df_weekly %>%
+  mutate(
+    region = to_snake_case(region)
+  ) %>%
+  group_by(region,epi_week, date) %>%
+  summarise(
+    total_cases = sum(total_cases, na.rm = T), .groups = "drop"
+  )
+
+df_region_weekly %>%
+  ggplot(
+    aes(x = date, y = total_cases, color = region)
+  ) +
+  geom_line() +
+  scale_color_brewer(type = "qual", palette = "Paired") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%y-%b") +
+  scale_y_continuous_hdx(breaks = seq(0, 900, 100)) +
+  labs(
+    y = "Total Cases",
+    title = "Cholera Cases",
+    subtitle = "Somalia 2022- 2023 by Region"
+  ) +
+  theme(
+    axis.title.x = element_blank(),
+    legend.title = element_blank(),
+    axis.text.x = element_text(angle = 90)
+  )
+```
+
+## Admin 1 - 2022 vs 2023
+
+### Boxplot
+
+```{r}
+df_region_weekly$date %>% max()
+
+# to compare 2022 vs 2023 properly we need to filter 2022 to the same temporal span as 2023
+latest_epi_week <-  df_region_weekly %>% 
+  filter(date==max(date)) %>% 
+  pull(epi_week) %>% 
+  unique()
+
+df_region_weekly_norm <- df_region_weekly %>% 
+  filter(
+    epi_week <= latest_epi_week
+  ) 
+
+df_region_weekly_norm %>%
+  mutate(
+    year = as_factor(year(date))
+  ) %>%
+  ggplot(
+    aes(
+      x = reorder(region, total_cases),
+      y = total_cases,
+      fill = year,
+    ),
+    color = "black"
+  ) +
+  geom_boxplot(
+    color = "black",
+    alpha = 0.5
+  ) +
+  labs(
+    x = "Region",
+    y = "Total Cases",
+    title = "Somalia - Cholera Cases",
+    subtitle = "Difference between 2022 & 2023 by region"
+  ) +
+  scale_y_continuous(breaks = seq(0, 800, 100), expand = c(0, 10)) +
+  coord_flip() +
+  theme(
+    legend.title = element_blank()
+  )
+```
+
+### Dumbell + Barchart
+```{r}
+df_region_yearly <- df_region_weekly_norm %>%
+  mutate(
+    yr = year(date),
+  ) %>%
+  group_by(
+    region,
+    yr
+  ) %>%
+  summarise(
+    total_cases = sum(total_cases),
+    .groups="drop"
+  )
+
+df_region_yearly_dumbell <- df_region_yearly %>%
+  group_by(region) %>%
+  filter(!all(total_cases == 0)) %>%
+  mutate(
+    yr = as_factor(yr)
+  ) %>%
+  pivot_wider(
+    names_from = yr,
+    values_from = total_cases
+  ) %>%
+  mutate(
+    class_diff = ifelse(`2023` > `2022`, "increase", "decrease")
+  ) %>%
+  pivot_longer(
+    cols = c("2022", "2023"),
+    names_to = "yr", values_to = "total_cases"
+  ) %>%
+  ungroup()
+
+# get the regions in the order they are shown in dumbell 
+# so that I can align in bar chart so that they will match up nicely
+# when put side by side w/ `{patchwork}`
+region_order <- df_region_yearly_dumbell %>%
+  group_by(region) %>%
+  summarise(
+    mean_case = mean(total_cases)
+  ) %>%
+  arrange(mean_case) %>%
+  pull(region)
+
+p_dumbell <- df_region_yearly_dumbell %>%
+  mutate(
+    region = fct_relevel(region, region_order)
+  ) %>%
+  ggplot(
+    aes(
+      x = region,
+      y = total_cases,
+      fill = yr
+    )
+  ) +
+  geom_point(aes(color = yr), size = 3) +
+  geom_line(aes(group = region), color = "grey", alpha = 0.5, lwd = 1) +
+  labs(
+    y = "Total Cases",
+    title = "Somalia - Cholera",
+    subtitle = "Total cases per regions (2022 & 2023)"
+  ) +
+  coord_flip() +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank()
+  )
+
+df_region_yearly_change <- df_region_yearly %>%
+  ungroup() %>%
+  # put in wide format to make it easier to subtract
+  # 2022 from 2023
+  pivot_wider(
+    names_from = yr,
+    values_from = total_cases
+  ) %>%
+  filter(!(`2023` == 0 & `2022` == 0)) %>%
+  mutate(
+    `2022` = replace_na(`2022`, 0),
+    `2023` = replace_na(`2023`, 0),
+    diff_change = `2023` - `2022`,
+    pct_change = (`2023` - `2022`) / (`2022`),
+    class_change = ifelse(pct_change < 0, "negative", "positive"),
+    region = fct_relevel(region, region_order)
+  )
+
+
+# pct change barplot - Think it's actually misleading
+# so better to use absolute difference
+p_bar_pct_change <- df_region_yearly_change %>%
+  ggplot(
+    aes(x = region, y = pct_change, fill = class_change)
+  ) +
+  geom_bar(stat = "identity", color = "grey") +
+  scale_fill_manual(
+    values = c(
+      `positive` = hdx_hex("tomato-hdx"),
+      `negative` = hdx_hex("sapphire-hdx")
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(-1, 1, by = 0.1),
+    labels = paste0(c(seq(-100, 90, 10), "≥ 100"), "%"),
+    limits = c(-1, 1)
+  ) +
+  coord_flip() +
+  labs(
+    title = "Somalia - Cholera Cases",
+    subtitle = "% increase increase from 2022-23 by region"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90),
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+
+# absolute change in cases from 2022-> 2023 by admin 1
+p_bar_absolute_change <- df_region_yearly_change %>%
+  ggplot(
+    aes(x = region, y = diff_change, fill = class_change)
+  ) +
+  geom_bar(stat = "identity", color = "grey") +
+  scale_fill_manual(
+    values = c(
+      `positive` = hdx_hex("tomato-hdx"),
+      `negative` = hdx_hex("sapphire-hdx")
+    )
+  ) +
+  scale_y_continuous(
+    breaks = seq(-2500, 4000, by = 500)
+  ) +
+  coord_flip() +
+  labs(
+    title = "Somalia - Cholera Cases",
+    subtitle = "Increase/decrease from 2022-23 by region"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90),
+    legend.position = "none",
+    axis.title.x = element_blank()
+  )
+
+# combine
+p_dumbell +
+  p_bar_absolute_change +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  plot_layout(ncol = 2)
+```
+
+## Maps
+
+```{r out.width="100%",out.height=10}
+df_region_yearly_adm_labelled <- df_region_yearly_change %>%
+  mutate(
+    # harmonize names to join w/ admin 1 COD
+    adm1 = str_replace(region, "_", " ") %>% str_to_title(),
+    adm1 = str_replace(adm1, "Hiran", "Hiraan")
+  )
+
+# check that names are harmonized - good
+df_region_yearly_adm_labelled %>%
+  filter(!adm1 %in% gdf_adm1$adm1_en)
+
+gdf_adm1_cholera <- gdf_adm1 %>%
+  left_join(df_region_yearly_adm_labelled, by = c("adm1_en" = "adm1"))
+
+# plot
+p_map_cholera_change <- ggplot() +
+  geom_sf(
+    data = gdf_adm1_cholera,
+    aes(fill = diff_change),
+    alpha = 1
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_adm1_cholera %>%
+        filter(!is.na(diff_change)),
+      aes(label = str_wrap(adm1_en, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Change in total reported cholera cases (2022 to 2023)"
+  )
+p_map_cholera_change
+```
+
+Might be cool to combine all 3 , but needs to exported large!
+```{r, eval =F}
+# combine
+p_dumbell +
+  p_bar_absolute_change +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank()
+  ) +
+  p_map_cholera_change+
+  plot_layout(ncol = 3)
+```
+
+## Quick Look at ECDC
+
+```{r}
+# e is short for ECDC
+# w is short for WHO
+library(countrycode)
+library(snakecase)
+fp_e <- file.path(
+  Sys.getenv("GLOBAL_MONITORING_DIR"),
+  "analysis",
+  "cholera_exploration",
+  "inputs",
+  "Cholera Worldwide Monitoring_EI.xlsx"
+)
+
+
+dfe_raw <- read_xlsx(fp_e,"Dataset") 
+
+dfe_c1 <- dfe_raw %>%
+  clean_names() %>% 
+  mutate(
+    date= as_date(date_rep),
+    week = week(date),
+    yr= year(date),
+    country_std= countryname(country_exp),
+    country_iso3= countryname(country_exp,destination="iso3c"),
+    data_source = "ECDC",
+    .before = country_exp
+  )
+
+# check countrycode -- looks good
+dfe_c1 %>% 
+  select(starts_with("country")) %>% 
+  filter(to_snake_case(country_std)!=to_snake_case(country_exp)) %>% 
+  distinct(country_std,country_exp)
+
+# insepect duplicates - looking at these I think if it is the exact same reported date and country
+# they look like true duplicates and we can be conservative and take the max value
+dfe_c1 %>% 
+  get_dupes(country_iso3,date_rep) %>% 
+  print(n=nrow(.))
+
+dfe_c2 <- dfe_c1 %>% 
+  # some grouping systematic grouping and slicing to
+  # retain most conservative records
+  group_by(country_iso3,date_rep) %>% 
+  slice_max(order_by = cases) %>% 
+  group_by(cases, .add=T) %>% 
+  slice_max(order_by = deaths) %>% 
+  group_by(deaths, .add=T) %>% 
+  slice_max(conf_cases) %>% 
+  group_by(country_iso3,date_rep) %>% 
+  # last step complete de-duplication
+  slice_max(order_by = cases, with_ties = F) %>% 
+  ungroup()
+
+# now let's look at weekly duplicates - these smell like duplicates
+# rather than records that should be summed
+dfe_c2 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+
+dfe_c3 <- dfe_c2 %>% 
+  # if all these vars are the same - it's a duplicate and we use `with_ties=F` 
+  # to just take 1
+  group_by(country_iso3,date_rep_curve_we,cases,conf_cases,deaths) %>% 
+  slice_max(order_by=cases,with_ties = F) %>% 
+  # if they have the same number of conf_cases & deaths but different 
+  # cases lets go w/ highest cases
+  group_by(country_iso3,date_rep_curve_we,conf_cases,deaths) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  # next if same number of conf cases go w/ max cases
+  group_by(country_iso3,date_rep_curve_we,conf_cases) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  # nex if same number of deaths go w/ max
+  group_by(country_iso3,date_rep_curve_we,deaths) %>% 
+  slice_max(order_by = cases,with_ties = T) %>% 
+  ungroup()
+
+# now we aer getting into the territory of potential cases that should be added
+dfe_c3 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+# these are a little hard to say....I lean towards duplicates - so will take highest cases for now
+dfe_c4 <- dfe_c3 %>% 
+  group_by(country_iso3,date_rep_curve_we) %>% 
+  slice_max(order_by = cases) %>% 
+  ungroup()
+
+# bam
+dfe_c4 %>% 
+  get_dupes(country_iso3,date_rep_curve_we) %>% 
+  print(n=nrow(.))
+
+# just call the cleaned df - dfe
+dfe <- dfe_c4
+
+dfe_som <- dfe %>% 
+  filter(country_iso3=="SOM") %>% 
+  group_by(date=floor_date(date,"month") ) %>% 
+  summarise(
+    cases=sum(cases)
+  ) %>% 
+  mutate(
+    yr= year(date),
+    mo=month(date,label=T)
+    
+  ) 
+
+# complete sequence of dates in data frame using these and tidyr comlete
+date_seq_to_complete <- seq(as.Date("2017-01-01"),as.Date("2023-12-01"),by="month")
+dfe_som %>% 
+  filter(year(date)>2016) %>% 
+  complete(date=date_seq_to_complete) %>% 
+  mutate(
+    yr = year(date),
+    mo =month(date, label=T)
+  ) %>% 
+  ggplot(aes(
+    x=mo,
+    y= cases,
+    group=yr
+    ))+
+  geom_point()+
+  geom_line()+
+  labs(
+    title = "Somalia Cholera Cases",
+    subtitle= "Data from ECDC national surveillance system"
+    
+  )+
+  facet_wrap(~yr,scales = "free_y")+
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    axis.title.x = element_blank()
+  )
+
+```
+
