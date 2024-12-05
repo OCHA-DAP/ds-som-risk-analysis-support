@@ -18,5 +18,6 @@ SOM_Flood_Viz_Files/*
 maps/*
 *.gpkg
 *.xlsx
+data/*
 
 
