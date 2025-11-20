@@ -56,6 +56,38 @@ no new data received since.
 - Flood outlook implications from seasonal SEAS5 forecasts.
 - Seasonal forecast comparisons
 
+## Developer notes
+
+### python not needed
+
+- python was only used to download IRI forecast for experimental purposes in 
+the beginning of project (data-raw/IRI_prob.py).
+- python dependencies can be ignored as of latest version of repo.
+
+### Targets setup
+
+The [`{targets}`](https://github.com/ropensci/targets) package is used to manage the flood exposure analysis workflow in [_targets.R](_targets.R). Targets creates a pipeline that tracks dependencies between data processing steps, automatically re-running only the parts that need updating when inputs change.
+
+**To run the flood analysis pipeline:**
+
+```r
+# Install targets if needed
+install.packages("targets")
+
+# View the pipeline structure
+targets::tar_visnetwork()
+
+# Run the entire pipeline
+targets::tar_make()
+
+# Load specific results
+targets::tar_load(gt_adm1_range_table)  # Load Admin 1 table
+targets::tar_load(df_adm2_exposure_ranges)  # Load Admin 2 exposure data
+```
+
+The pipeline processes FloodScan data, WorldPop estimates, and OCHA population data to calculate flood exposure statistics at Admin 1 and Admin 2 levels. See [R/tar_flood_exposure.R](R/tar_flood_exposure.R) for the custom functions used in the pipeline.
+
+
 
 ## TBD
 
