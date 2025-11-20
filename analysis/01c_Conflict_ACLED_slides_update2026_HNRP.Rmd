@@ -1,0 +1,942 @@
+---
+title: "Conflict data"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 4
+date: "2025-11-18"
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  results = "asis"
+)
+```
+
+# Intro
+
+This data takes a look at ACLED conflict data for Somalia. The main focus is to compare 2022 to 2023. Additionally, we wan't to make visuals w/ respect to the [2023 HNO report](https://reliefweb.int/report/somalia/somalia-humanitarian-needs-overview-2023-february-2023) table (p. 55) which identifies priority areas and risk scores for both `Inter-Clan` and  `Non international armed conflict - Al Shabaab` violence.
+
+The visuals produced here are the ones critical to the conflict-related analysis/visuals presented in this [brainstorming slide-deck](https://docs.google.com/presentation/d/1LuMEILKzSp8Ujp355fItPXC1skFoOalAIhPpJPHWglc/edit#slide=id.g2456d9f415a_0_102)
+
+```{r}
+library(tidyverse)
+library(gt)
+library(rhdx)
+library(janitor)
+library(ggfx)
+# library(acled.api)
+library(gghdx)
+library(sf)
+library(patchwork)
+# library(cumulus)
+
+gghdx()
+
+# cumulus::
+gdf_adm1 <- cumulus::download_fieldmaps_sf(iso3= "som",layer = "som_adm1")$som_adm1
+gdf_adm1 <- gdf_adm1 |> 
+  clean_names()
+
+
+api_base_url <- "https://acleddata.com/api/acled/read?_format=json"
+# Updated ACLED API call using OAuth authentication (new system)
+token_url <- "https://acleddata.com/oauth/token"
+# Get credentials from environment variables
+username <- Sys.getenv("ACLED_USER_EMAIL")
+password <- Sys.getenv("ACLED_PASSWORD")
+
+# Download ACLED data using new OAuth authentication
+df_acled_long_new <- httr2::request(api_base_url) |>
+  httr2::req_url_query(
+    country = "Somalia",
+    event_date = paste0("2010-01-01|", Sys.Date()),
+    event_date_where = "BETWEEN",
+    limit = 0  # No limit - get all records
+  ) |>
+  httr2::req_oauth_password(
+    client = httr2::oauth_client("acled", token_url),
+    username = username,
+    password = password
+  ) |>
+  httr2::req_perform() |>
+  httr2::resp_body_json() |>
+  purrr::pluck("data") |>
+  purrr::map(\(x) {
+    # Remove NULL columns before converting to tibble
+    x[!sapply(x, is.null)] |>
+      dplyr::as_tibble()
+  }) |>
+  purrr::list_rbind() |>
+  readr::type_convert(
+    col_types = readr::cols()
+  )
+
+
+
+```
+
+```{r oldAcledAPI, eval = FALSE}
+# old acled API call
+df_acled_long <- acled.api(
+  country = "Somalia",
+  start.date = "2010-01-01",
+  access.key = Sys.getenv("ACLED_ACCESS_KEY"),
+  email.address = Sys.getenv("ACLED_USER_EMAIL"),
+  end.date = Sys.Date(),
+  all.variables=T
+)
+
+# filter to just violent events
+df_acled_violent <- df_acled_long %>%
+  filter(event_type %in% c(
+    "Battles",
+    # "Riots",
+    "Explosions/Remote violence",
+    "Violence against civilians"
+  )) %>%
+  tibble()
+```
+
+```{r}
+
+# Filter to just violent events (same as original code)
+df_acled_violent <- df_acled_long_new |> 
+  filter(event_type %in% c(
+    "Battles",
+    "Explosions/Remote violence",
+    "Violence against civilians"
+  )) |>
+  tibble()
+
+df_acled_violent |> 
+  filter(is.na(admin1)) |> 
+  glimpse()
+```
+
+
+
+
+```{r}
+df_acled_violent <- df_acled_violent %>% 
+  mutate(
+    date= as_date(event_date),
+    conflict_class = case_when(
+      str_detect(actor1, "Al Shabaab")~"Al Shabaab" ,
+      str_detect(actor2, "Al Shabaab")~"Al Shabaab" ,
+      str_detect(actor1, "Clan")~"Clan" ,
+      str_detect(actor2, "Clan")~"Clan" ,
+      str_detect(actor1, "Militia")~"Clan" ,
+      str_detect(actor2, "Militia")~"Clan" ,
+      .default = "other")
+  )
+
+
+```
+
+# Conflict Bar Charts
+
+## All Fatalities 2022 vs 2023
+
+```{r}
+
+
+# latest_date_used <- as_date("2023-10-13") # used for 2024 HNRP support (done in 2023)
+# latest_date_used <- as_date("2024-11-28") # update
+latest_date_used <- as_date("2025-11-19") # update
+
+latest_date_yday <- yday(
+  latest_date_used
+)
+
+df_acled_violence_gte2022 <- df_acled_violent %>%
+  filter(
+    year %in% c(2022, 2023,2024,2025),
+    yday(event_date)<=latest_date_yday
+         )
+
+df_adm1_acled_gte2022 <- df_acled_violence_gte2022 %>%
+  group_by(year, admin1) %>%
+  summarise(
+    fatalities = sum(fatalities,na.rm = T),
+    .groups="drop"
+  ) 
+
+df_adm1_acled_gte2022 %>%
+  ggplot(
+    aes(x = reorder(admin1, fatalities), y = fatalities, fill = as_factor(year))
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  labs(
+    title = "Somalia ACLED Data",
+    subtitle = "Fatalities per admin 1 - 2022 vs 2023"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank()
+  )
+```
+
+```{r}
+
+             )
+```
+
+## Fatalities by Conflict Type - 2023 vs 2023
+```{r}
+df_adm1_conflict_gte2022 <- df_acled_violence_gte2022 %>%
+  filter(
+    conflict_class!="other",
+  ) %>%
+  mutate(
+    conflict_class_label = if_else(conflict_class == "Al Shabaab", "Al Shabaab Related", "Clan Related")
+  ) %>% 
+  group_by(year, admin1,conflict_class_label) %>%
+  summarise(
+    fatalities= sum(fatalities,na.rm=T),
+    .groups="drop"
+  )
+
+df_adm1_conflict_gte2022 %>%
+  ggplot(
+    aes(x = reorder(admin1, fatalities), y = fatalities, fill = as_factor(year))
+  ) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  facet_wrap(~conflict_class_label)+
+  labs(
+    title = "Somalia ACLED Data - By Confict Type",
+    subtitle = "Fatalities per admin 1 2022 to 2025",
+    caption = "Classification of conflict type:\n1. If Al-Shabaab was listed as actor 1 or 2 it was event is considered 'Al Shabaab Related'\n2. If Al-Shabaab was not listed and either 'Clan' or 'Militia' was listed as actor 1 or 2 the event was classified as 'Clan Related'\n3. All other events types not considered"
+  ) +
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    plot.caption = element_text(hjust=0)
+  )
+```
+
+```{r}
+df_adm1_conflict_gte2022 |> 
+  filter(!is.na(admin1)) |> 
+  ggplot(
+    aes(x= year, y= fatalities, 
+        color = conflict_class_label, group = conflict_class_label)
+  )+
+  geom_point(alpha = 0.3)+
+  geom_line()+
+  facet_wrap(~admin1) +
+  labs(
+    title = "Somalia: Yearly Conflict Fatalities",
+    subtitle = "By admin 1 and conflict type classification (2022-2025)"
+  )+
+  theme(
+    axis.title.x = element_blank(),
+    legend.title  = element_blank(),
+    axis.text.x = element_text(angle=90),
+    panel.border = element_rect(fill= NA,color = "grey"),
+    strip.background = element_rect(fill = "#1bb580"),
+    strip.text = element_text(color = "white")
+  )
+```
+
+## Increase/Decrease from 2022 to 2023
+
+
+ACLED conflict fatalities by type (Shabaab vs Interclan)
+```{r}
+
+df_adm1_conflict_acled_compare <- df_adm1_conflict_gte2022 %>% 
+  pivot_wider(names_from = year, values_from = fatalities,values_fill = 0) %>%
+  mutate(
+    diff = `2025` - `2024`,
+    diff_class = ifelse(diff < 0, "neg", "pos")
+  )
+
+
+p_bar_yearly_diff <- df_adm1_conflict_acled_compare %>%
+  ggplot(
+    aes(x = admin1, y = diff, fill = diff_class)
+  ) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = seq(-500, 1200, 100)) +
+  coord_flip() +
+  scale_fill_manual(values = c(hdx_hex("sapphire-hdx"), hdx_hex("tomato-hdx"))) +
+  labs(
+    title = "Somalia ACLED Data",
+    subtitle = "Increase/Decrease Fatalities 2023-2024",
+    caption = "Note: scales of x-axis differ in 2 plots"
+  ) +
+  geom_text( aes(
+    label=diff,
+    y=ifelse(diff<=100, diff+ 50* sign(diff),diff + (.05*diff))
+    # y=max(diff)+.05*max(diff)
+                 ),
+    angle=270)+
+  facet_wrap(~conflict_class_label,scales = "free_x")+
+  theme(
+    legend.title = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90),
+    axis.title.x = element_blank(),
+    plot.caption = element_text(hjust=0),
+    panel.border = element_rect(color="grey",fill=NA)
+  )
+  
+```
+
+# Maps
+
+From 2023 HNO we have the following classifications
+
+```{r}
+violence_class_labels <- c(
+  "Non
+international
+armed
+conflict - Al
+Shabaab",
+  "Inter-clan
+violence"
+)
+
+al_shabab <- c(
+  "Galmudug",
+  "Hirshabelle",
+  "Jubaland",
+  "South West State",
+  "Puntland"
+)
+
+inter_clan <- c(
+  "Galmudug",
+  "Hiraan",
+  "Lower Shabelle",
+  "Middle Shabelle",
+  "Sool regions"
+)
+
+conflict_priority_zones <- data.frame(
+  al_shabab,
+  inter_clan
+) %>%
+  arrange(al_shabab, inter_clan)
+
+colnames(conflict_priority_zones) <- violence_class_labels
+
+
+conflict_priority_zones %>%
+  gt()
+```
+
+## HNO 2023 - Groupings for Geographical Scope on Violence Scores
+
+```{r}
+# HNO report mentioned does not group always by admin 1 sometimes admin 1's are grouped together to create regions or sometimes
+# "states" nonetheless neither of these groupings are CODs so we make them here ourselves
+# The groupings used in the report are different depending on whether they are talking about inter-clan or al shabab related violence
+# We will still visualize the results at the admin 1 level, but these will be useful to show
+
+gdf_adm1_class <- gdf_adm1 %>%
+  mutate(
+    hno_intl_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # International
+      # Hirshabelle
+      adm1_en %in% c("Middle Shabelle", "Hiraan") ~ "Hirshabelle",
+      # Jubaland
+      adm1_en %in% c("Gedo", "Lower Juba", "Middle Juba") ~ "Jubaland",
+      # Puntland
+      adm1_en %in% c("Bari") ~ "Puntland",
+      # South WestState
+      adm1_en %in% c("Lower Shabelle", "Bay", "Bakool") ~ "South West State",
+      .default = NA
+    ),
+    hno_interclan_conflict = case_when(
+      # International & Inter-clan
+      adm1_en %in% c("Mudug", "Galgaduud") ~ "Galmadug",
+
+      # Hiran
+      adm1_en %in% c("Hiraan") ~ "Hiraan",
+      # Middle Shabelle
+      adm1_en %in% c("Middle Shabelle") ~ "Middle Shabelle",
+      adm1_en %in% c("Lower Shabelle") ~ "Lower Shabelle",
+
+      # Sool
+      adm1_en %in% c("Sool") ~ "Sool Regions",
+      .default = NA
+    ),
+  )
+```
+
+## Map Admin Grouping: Non-International Armed Forces (Al-Shabab) Grouping
+
+```{r}      
+gdf_adm1_class %>%
+  ggplot() +
+  geom_sf(
+    aes(
+      fill = hno_intl_conflict
+    )
+  ) +
+  scale_fill_discrete(
+    name = "Non-Intl\nArmed Conflict",
+    na.translate = F
+  ) +
+  labs(
+    title = "Somalia - Regions highlighted for Non-Intl Armed Conflict (Al Shabab)",
+    subtitle = "Groupings in legend from 2023 HNO"
+  )
+```
+
+
+## Map Admin Grouping: Interclan violence 
+```{r}
+gdf_adm1_class %>%
+  ggplot() +
+  geom_sf(
+    aes(
+      fill = hno_interclan_conflict
+    )
+  ) +
+  scale_fill_discrete(
+    name = "Interclan\nViolence", na.translate = F
+  ) +
+  labs(
+    title = "Somalia - Regions highlighted for inter-clan violence",
+    subtitle = "Groupings in legend from 2023 HNO"
+  )
+```
+
+
+## Non-Intl Armed Conflict (Al Shabaab) boundaries
+
+### Map - Shabaab
+
+- Below is a map showing the increase decrease in Al-Shabaab related conflict fatalities between 2022 & 2023. Just leaving auto legend as is for now until we decide on more polished visuals.
+- Black delineations represent the admin groupings used in the 2023 HNO to define areas of increased Non-Intl Armed conflict (Al Shabaab) related conflict
+
+```{r}
+
+df_adm1_conflict_acled_compare |> 
+  mutate(
+    diff24 = `2025`-`2024`
+  )
+
+df_adm1_shabaab <- df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Al Shabaab Related"
+              )
+gdf_adm1_acled_shabaab <- gdf_adm1_class %>%
+  left_join(df_adm1_shabaab, by = c("adm1_en" = "admin1"))
+
+
+df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Al Shabaab Related"
+              )
+
+
+gdf_intl_groups_dissolved <- gdf_adm1_class %>%
+  filter(!is.na(hno_intl_conflict)) %>%
+  group_by(
+    hno_intl_conflict
+  ) %>%
+  summarise()
+
+p_shabaab_map <- ggplot() +
+  geom_sf(
+    data = gdf_adm1_acled_shabaab,
+    aes(fill = diff),
+    alpha = 1
+  ) +
+  with_shadow(
+    geom_sf(
+      data = gdf_intl_groups_dissolved,
+      # aes(fill= diff),
+      fill = NA,
+      alpha = 1,
+      color = "black",
+      lwd = 1
+    ),
+    sigma = 3, x_offset = 0.5,
+    y_offset = 0.25
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_intl_groups_dissolved,
+      aes(label = str_wrap(hno_intl_conflict, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Increase/Decrease in conflict-related fatalities 2022-2023",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define Al-Shabaab related zones",
+    caption = "Only fatalities in which Al-Shabaab was involved"
+  )+
+  theme(
+    plot.title = element_text(size=14),
+    plot.subtitle = element_text(size=12),
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0)
+  )
+p_shabaab_map
+```
+
+### Trends Al-Shabaab 
+
+Below we can the trend for each admin 1 faceted/grouped by the 2023 HNO admin grouping definitions.
+
+```{r, results='hide'}
+latest_date_yday <- yday(
+  latest_date_used
+)
+
+# filter all years so they do not go past Oct. 10
+df_acled_violent_norm <- df_acled_violent %>%
+  filter(
+        yday(event_date)<=latest_date_yday
+        ) 
+  
+# good
+df_acled_violent_norm %>% 
+  filter(!admin1 %in% gdf_adm1_class$adm1_en) %>% 
+  distinct(admin1)
+
+# add HNO groupings
+df_acled_violent_norm_hno <- df_acled_violent_norm %>% 
+  left_join(
+    gdf_adm1_class %>% 
+      st_drop_geometry() %>% 
+      select(-starts_with("adm0")), 
+    by = c("admin1"="adm1_en")
+  )
+
+
+
+df_adm1_acled_conflict <- df_acled_violent_norm_hno %>%
+  mutate(
+    hno_intl_conflict = ifelse(is.na(hno_intl_conflict),"Not grouped as Al-Shabaab related",hno_intl_conflict),
+    hno_interclan_conflict = ifelse(is.na(hno_interclan_conflict),"Not grouped as Clan related",hno_interclan_conflict)
+  ) %>% 
+  group_by(year = floor_date(
+    as_date(event_date),"year"), hno_intl_conflict,admin1,conflict_class) %>%
+  summarise(
+    fatalities = sum(fatalities,na.rm=T),
+    .groups="drop"
+  ) 
+
+#' Because there are so many admin 1 units involved in this grouping it a simple facet_wrap does not look good
+#' as there would be too many line colors. I want to split plots by HNO grouping, but preserve the admin 1 information
+#' Therefore I can just loop through and use `{patchwork}` rather than ~facet_wrap
+
+hno_shabaab_regions <- df_adm1_acled_conflict$hno_intl_conflict %>% unique()
+
+p_shabaab_trends <- 
+  map(set_names(hno_shabaab_regions),
+      \(region_name){
+    df_adm1_acled_conflict %>% 
+      filter(conflict_class=="Al Shabaab",
+             hno_intl_conflict==region_name) %>% 
+      ggplot(
+        aes(x= year, y=fatalities, color= admin1, group=admin1)
+      )+
+      geom_point()+
+      geom_line()+
+      scale_x_date(date_breaks ="1 year",
+                   date_labels = "%Y")+
+          # scale_color_brewer(type ="qual")+
+      labs(
+        title = region_name
+      )+
+      theme(
+        legend.title = element_blank(),
+        axis.title = element_blank(),
+        plot.title = element_text(size=10),
+        axis.text.x = element_text(angle=90),
+        legend.text = element_text(size=8),legend.key = element_rect(size=3),
+        panel.border = element_rect(color="grey", fill = NA)
+      )
+  }
+  )
+```
+
+```{r}
+p_shabaab_trends$Jubaland+
+  p_shabaab_trends$`South West State`+
+  p_shabaab_trends$Hirshabelle+
+  p_shabaab_trends$Galmadug+
+  p_shabaab_trends$Puntland+
+  p_shabaab_trends$`Not grouped as Al-Shabaab related`+
+  plot_annotation(
+    title = "Somalia: Yearly Al-Shabaab Related Conflict Fatalities",
+    subtitle = "Split by 2023 HNO Regional Groupings"
+    )+
+  plot_layout(ncol=3)
+```
+
+
+## Interclan Conflict
+
+### Map Interclan Conflict
+
+- Below is a map showing the increase decrease in Interclan related conflict fatalities between 2022 & 2023. Just leaving auto legend as is for now until we decide on more polished visuals.
+- Black delineations represent the admin groupings used in the 2023 HNO to define areas of increased Intercland-violence related conflict risk.
+```{r}
+df_adm1_clan <- df_adm1_conflict_acled_compare %>% 
+              filter(
+                conflict_class_label =="Clan Related"
+              )
+
+gdf_adm1_acled_clan <- gdf_adm1_class %>%
+  left_join(df_adm1_clan, by = c("adm1_en" = "admin1"))  
+
+
+
+gdf_interclan_groups_dissolved <- gdf_adm1_acled_clan %>%
+  filter(!is.na(hno_interclan_conflict)) %>%
+  group_by(
+    hno_interclan_conflict
+  ) %>%
+  summarise()
+
+p_interclan_map <- ggplot() +
+  geom_sf(
+    data = gdf_adm1_acled_clan,
+    aes(fill = diff),
+    alpha = 1
+  ) +
+  with_shadow(
+    geom_sf(
+      data = gdf_interclan_groups_dissolved,
+      # aes(fill= diff),
+      fill = NA,
+      alpha = 1,
+      color = "black",
+      lwd = 1
+    ),
+    sigma = 3, x_offset = 0.5,
+    y_offset = 0.25
+  ) +
+  scale_fill_gradient2(low = "#709AE1", high = "#FD7446") +
+  with_shadow(
+    geom_sf_text(
+      data = gdf_interclan_groups_dissolved,
+      aes(label = str_wrap(hno_interclan_conflict, width = 8)),
+      color = "black"
+    ),
+    x_offset = 0.2,
+    y_offset = 0.2,
+    colour = "white", sigma = 2
+  ) +
+  labs(
+    title = "Somalia - Increase/Decrease in Interclan-Confict Related Fatalities between 2023 & 2024",
+    subtitle = "Black lines delineate areas used in the 2023 HNO to define zones with higher levels of Interclan violence",
+    caption = "Only conflict events in which at least one actor was described as Clan or Militia and no actors were Al-Shabaab\nGrey indicates no Interclan events reported in neither 2023 or 2024"
+  )+
+  theme(
+    plot.title = element_text(size=13),
+    plot.subtitle = element_text(size=10),
+    axis.title = element_blank(),
+    plot.caption = element_text(hjust=0, size=10)
+  )
+p_interclan_map
+```
+
+
+```{r}
+p_shabaab_map+
+  labs(
+    subtitle = "Al Shabaab conflict related fatalities"
+  )+
+  theme(
+    plot.title= element_blank(),
+    plot.subtitle = element_text(size =9),
+    plot.caption = element_blank(),
+    legend.position = c(0.95, 0.05),  # (x, y) coordinates in [0, 1] range
+    legend.justification = c("right", "bottom"),  # Aligns to bottom-right corner
+    legend.background = element_rect(fill = alpha("white", 0)) ,
+    legend.title = element_blank()
+#  legend.position = c(.95, .95),
+# legend.box.background = element_rect(color = NA, fill =NA)
+) +
+  
+  p_interclan_map+
+      labs(
+    subtitle = "Interclan-conflict related fatalities"
+  ) +
+  theme(
+    plot.title= element_blank(),
+    plot.caption = element_blank(),
+    plot.subtitle = element_text(size =9),
+    legend.position = c(0.95, 0.05),  # (x, y) coordinates in [0, 1] range
+    legend.justification = c("right", "bottom"),  # Aligns to bottom-right corner
+    legend.background = element_rect(fill = alpha("white", 0)) ,
+    legend.title = element_blank()
+  ) +
+  p_bar_yearly_diff+
+  labs(
+    subtitle = "2025 vs 2024 Fatalities"
+  )+
+  theme(
+    plot.title= element_blank(),
+    plot.subtitle = element_text(size =9),
+    plot.caption = element_blank(),
+    # (x, y) coordinates in [0, 1] range
+    
+    legend.position = "none"
+  ) +
+  patchwork::plot_annotation(
+    title= "Change in conflict related fatalities between 2025 & 2024", 
+    caption = "ACLED data accecssed 2025-11-19",
+Black lines delineate areas used in 2023 HNO to define Al-Shabaab vs Interclan violence zones. Grey fill on maps means no fatalities of respective classification in either 2025 or 2024",
+    theme = theme(
+      plot.caption = element_text(hjust = 0 )
+    )
+    )
+
+```
+
+### Trends - Interclan Conflict
+
+Below we can the trend for each admin 1 faceted/grouped by the 2023 HNO admin grouping definitions.
+```{r}
+
+df_adm1_acled_conflict_interclan <- df_acled_violent_norm_hno %>%
+  mutate(
+    hno_intl_conflict = ifelse(is.na(hno_intl_conflict),"Not grouped as Al-Shabaab related",hno_intl_conflict),
+    hno_interclan_conflict = ifelse(is.na(hno_interclan_conflict),"Not grouped as Clan related",hno_interclan_conflict)
+  ) %>% 
+  group_by(year = floor_date(
+    as_date(event_date),"year"), hno_interclan_conflict,admin1,conflict_class) %>%
+  summarise(
+    across(c("interaction", "fatalities"), ~ sum(.x)),
+    .groups="drop"
+  ) 
+```
+
+
+```{r}
+# Simple facet_wrap will work w/ less admin lines to color
+df_adm1_acled_conflict_interclan %>% 
+  filter(conflict_class=="Clan",
+         hno_interclan_conflict!="Not grouped as Clan related") %>% 
+  ggplot(
+    aes(x= year, y=fatalities, color= admin1, group=admin1)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks ="2 year",
+               date_labels = "%Y")+
+  scale_y_continuous(
+    breaks= seq(0,350, 50),
+    limits= c(0, 325),
+    expand = c(0,0)
+  )+
+  facet_wrap(~hno_interclan_conflict)+
+  labs(
+    title = "Somalia: Yeary Interclan Related Conflict Fatalities",
+    subtitle = "Split by 2023 HNO Groupings"
+  )+
+  theme(
+    legend.title = element_blank(),
+    axis.title = element_blank(),
+    
+    axis.text.x = element_text(angle=90),
+    # legend.text = element_text(size=8),legend.key = element_rect(size=3),
+    panel.border = element_rect(color="grey", fill = NA)
+  )
+```
+
+
+```{r}
+
+df_adm1_acled_conflict_interclan %>% 
+  filter(conflict_class=="Clan",
+         hno_interclan_conflict=="Not grouped as Clan related") %>% 
+  ggplot(
+    aes(x= year, y=fatalities, color= admin1, group=admin1)
+  )+
+  geom_point()+
+  geom_line()+
+  scale_x_date(date_breaks ="2 year",
+               date_labels = "%Y")+
+  scale_y_continuous(
+    breaks= seq(0,150, 25),
+    limits= c(0, 125),
+    expand = c(0,0)
+  )+
+  labs(
+    title = "Somalia: Yeary Interclan Related Conflict Fatalities",
+    subtitle = "Small flare ups in clan-related violence in regions not classified as interclan violence zones (HNO 2023)"
+  )+
+  scale_color_brewer(type = "qual",palette = "Set3")+
+  theme(
+    legend.title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle=90),
+    panel.border = element_rect(color="grey", fill = NA)
+  )
+
+
+```
+
+## Signals ACLED CODE
+```{r eval= FALSE}
+# Get credentials from environment variables
+username <- get_env$get_env("ACLED_USERNAME")
+password <- get_env$get_env("ACLED_PASSWORD")
+
+username <- get_env$get_env("ACLED_USERNAME")
+
+
+
+   df_acled <- httr2$request(
+      api_base_url
+    ) |>
+      httr2$req_url_query(
+        fields = paste(
+          "iso",
+          "event_date",
+          "event_type",
+          "latitude",
+          "longitude",
+          "fatalities",
+          "notes",
+          sep = "|"
+        ),
+        limit = 0 # much faster than using limits / pagination sadly
+      ) |>
+      httr2$req_oauth_password(
+        client = httr2$oauth_client("acled", token_url),
+        username = username,
+        password = password
+      ) |>
+      httr2$req_perform() |>
+      httr2$resp_body_json() |>
+      purrr$pluck("data") |>
+      purrr$map(dplyr$as_tibble) |>
+      purrr$list_rbind() |>
+      readr$type_convert(
+        col_types = readr$cols()
+      )
+
+
+#' Download raw conflict data
+#'
+#' Downloads raw conflict data from the ACLED API. Uses the ACLED API,
+#' which requires the `ACLED_EMAIL_ADDRESS` and `ACLED_ACCESS_KEY` environment
+#' variables. No longer uses the `{acled.api}` package as the downloads were
+#' unsuccessful, so instead directly using `{httr2}` and the API endpoint.
+#'
+#' The downloaded data is stored on the Azure blob so we don't have to make multiple calls to
+#' the ACLED API in a single day. To reduce the size of the returned data, only
+#' relevant event types are returned and the only columns returned are the
+#' numeric ISO codes, geocoordinates of the event, date of the event,
+#' number of fatalities, and notes describing the event.
+#'
+#' @export
+raw <- function() {
+  # first we check that we haven't already downloaded ACLED data today, and if we
+
+    # Perform request with OAuth2 password
+    df_acled <- httr2$request(
+      api_base_url
+    ) |>
+      httr2$req_url_query(
+        fields = paste(
+          "iso",
+          "event_date",
+          "event_type",
+          "latitude",
+          "longitude",
+          "fatalities",
+          "notes",
+          sep = "|"
+        ),
+        limit = 0 # much faster than using limits / pagination sadly
+      ) |>
+      httr2$req_oauth_password(
+        client = httr2$oauth_client("acled", token_url),
+        username = username,
+        password = password
+      ) |>
+      httr2$req_perform() |>
+      httr2$resp_body_json() |>
+      purrr$pluck("data") |>
+      purrr$map(dplyr$as_tibble) |>
+      purrr$list_rbind() |>
+      readr$type_convert(
+        col_types = readr$cols()
+      )
+
+
+#' Download raw conflict data
+#'
+#' Downloads raw conflict data from the ACLED API. Uses the ACLED API,
+#' which requires the `ACLED_EMAIL_ADDRESS` and `ACLED_ACCESS_KEY` environment
+#' variables. No longer uses the `{acled.api}` package as the downloads were
+#' unsuccessful, so instead directly using `{httr2}` and the API endpoint.
+#'
+#' The downloaded data is stored on the Azure blob so we don't have to make multiple calls to
+#' the ACLED API in a single day. To reduce the size of the returned data, only
+#' relevant event types are returned and the only columns returned are the
+#' numeric ISO codes, geocoordinates of the event, date of the event,
+#' number of fatalities, and notes describing the event.
+#'
+#' @export
+raw <- function() {
+  # first we check that we haven't already downloaded ACLED data today, and if we
+  # have, just use that raw data. Also checks that `HS_FIRST_RUN` values match
+  date_check <- cs$read_az_file("output/acled_conflict/download_date.parquet")
+
+  if (date_check$acled_download_date == Sys.Date()) {
+    logger$log_debug("ACLED data already downloaded today. Using existing raw.parquet file on Azure")
+    cs$read_az_file("output/acled_conflict/raw.parquet")
+  } else {
+    logger$log_debug("Downloading ACLED data")
+
+    # Perform request with OAuth2 password
+    df_acled <- httr2$request(
+      api_base_url
+    ) |>
+      httr2$req_url_query(
+        fields = paste(
+          "iso",
+          "event_date",
+          "event_type",
+          "latitude",
+          "longitude",
+          "fatalities",
+          "notes",
+          sep = "|"
+        ),
+        limit = 0 # much faster than using limits / pagination sadly
+      ) |>
+      httr2$req_oauth_password(
+        client = httr2$oauth_client("acled", token_url),
+        username = username,
+        password = password
+      ) |>
+      httr2$req_perform() |>
+      httr2$resp_body_json() |>
+      purrr$pluck("data") |>
+      purrr$map(dplyr$as_tibble) |>
+      purrr$list_rbind() |>
+      readr$type_convert(
+        col_types = readr$cols()
+      )
+  }
+```

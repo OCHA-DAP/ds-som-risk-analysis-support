@@ -21,3 +21,6 @@ maps/*
 data/*
 
 
+*.gpkg
+*.gpkg-shm
+*.gpkg-wal
