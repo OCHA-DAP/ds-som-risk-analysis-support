@@ -182,10 +182,6 @@ df_adm1_acled_gte2022 %>%
   )
 ```
 
-```{r}
-
-             )
-```
 
 ## Fatalities by Conflict Type - 2023 vs 2023
 ```{r}
@@ -233,9 +229,11 @@ df_adm1_conflict_gte2022 |>
   facet_wrap(~admin1) +
   labs(
     title = "Somalia: Yearly Conflict Fatalities",
-    subtitle = "By admin 1 and conflict type classification (2022-2025)"
+    subtitle = "By admin 1 and conflict type classification (2022-2025)",
+    caption = "Fatality Data: ACLED (Accessed 2025-11-19).\nYearly totals summed from 01 Jan to 19 Nov each year"
   )+
   theme(
+    plot.caption = element_text(hjust=0),
     axis.title.x = element_blank(),
     legend.title  = element_blank(),
     axis.text.x = element_text(angle=90),
@@ -700,8 +698,9 @@ p_shabaab_map+
   ) +
   patchwork::plot_annotation(
     title= "Change in conflict related fatalities between 2025 & 2024", 
-    caption = "ACLED data accecssed 2025-11-19",
-Black lines delineate areas used in 2023 HNO to define Al-Shabaab vs Interclan violence zones. Grey fill on maps means no fatalities of respective classification in either 2025 or 2024",
+    caption = "ACLED data accessed 2025-11-19
+Black lines delineate areas used in 2023 HNO to define Al-Shabaab vs Interclan violence zones. Grey fill on maps means no fatalities of respective classification in either 2025 or 2024.
+Both years normalized to same date range (up to Nov. 19)",
     theme = theme(
       plot.caption = element_text(hjust = 0 )
     )
