@@ -24,24 +24,50 @@
 #
 
 
-zonal_pop_exposure_method1 <- function(floodscan_path=fp_fs,
-                                       worldpop_path=fp_wp,
-                                       flood_frac_thresh=0.005,
-                                       adm = gdf_adm$adm2
-){
-  tnc_fs <- tidync(floodscan_path)
-  tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,geometry = adm)
-  r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
-  r_wp <-  rast(worldpop_path)
-  fs_lookup <-  floodscan_lookup(r_fs) %>%
-    filter(!str_detect(fs_seas,"other"))
+#' Seasonal maximum flood fraction, from either FloodScan source
+#'
+#' Two sources are supported:
+#'
+#' * a `Date` -- the latest FloodScan date available on blob. Seasonal maxima
+#'   are built from the daily COGs maintained by `ds-floodscan-ingest`, which
+#'   are kept current. This is the default the pipeline uses.
+#' * a `character` path to the legacy `.nc` snapshot on the shared drive. That
+#'   file ends 2022-12-31, so it cannot produce anything after OND 2022. Kept
+#'   so earlier results can be reproduced.
+#'
+#' Both return one layer per season, named with the season's first date.
+#'
+#' @param floodscan_source `Date` or `character`, see above
+#' @param geometry `sf` object used to crop
+#' @param band `character` FloodScan band
+#'
+#' @return `SpatRaster`
+#' @export
+fs_seasonal_max <- function(floodscan_source, geometry, band = "SFED_AREA") {
 
-  # do the same, but this time per year
+  if (inherits(floodscan_source, "Date")) {
+    return(
+      fs_blob_seasonal_max(
+        geometry = geometry,
+        end_date = floodscan_source,
+        band = band
+      )
+    )
+  }
+
+  # legacy: NetCDF snapshot on the shared drive
+  tnc_fs <- tidync(floodscan_source)
+  tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs, geometry = geometry)
+  r_fs <- fs_to_raster(fs_obj = tnc_fs_filt, band = band)
+
+  fs_lookup <- floodscan_lookup(r_fs) %>%
+    filter(!str_detect(fs_seas, "other"))
+
   lr_seas_max <- unique(fs_lookup$fs_seas) %>%
     map(
       \(seas_tmp){
-        rname_temp<- fs_lookup %>%
-          filter(fs_seas==seas_tmp) %>%
+        rname_temp <- fs_lookup %>%
+          filter(fs_seas == seas_tmp) %>%
           pull(fs_name)
         r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
         r_max <- max(r_fs_tmp)
@@ -50,7 +76,17 @@ zonal_pop_exposure_method1 <- function(floodscan_path=fp_fs,
         return(r_max)
       }
     )
-  r_seas_max <- rast(lr_seas_max)
+  rast(lr_seas_max)
+}
+
+
+zonal_pop_exposure_method1 <- function(floodscan_source=fp_fs,
+                                       worldpop_path=fp_wp,
+                                       flood_frac_thresh=0.005,
+                                       adm = gdf_adm$adm2
+){
+  r_seas_max <- fs_seasonal_max(floodscan_source, geometry = adm)
+  r_wp <-  rast(worldpop_path)
 
   r_fs_seas_max_crop <- crop(r_seas_max, r_wp)
   ext(r_fs_seas_max_crop) <- ext(r_wp)
@@ -78,33 +114,13 @@ zonal_pop_exposure_method1 <- function(floodscan_path=fp_fs,
 }
 
 
-zonal_pop_exposure_method2 <- function(floodscan_path=fp_fs,
+zonal_pop_exposure_method2 <- function(floodscan_source=fp_fs,
                                worldpop_path=fp_wp,
                                flood_frac_thresh=0.2,
                                adm = gdf_adm$adm2
 ){
-  tnc_fs <- tidync(floodscan_path)
-  tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,geometry = adm)
-  r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
+  r_seas_max <- fs_seasonal_max(floodscan_source, geometry = adm)
   r_wp <-  rast(worldpop_path)
-  fs_lookup <-  floodscan_lookup(r_fs) %>%
-    filter(!str_detect(fs_seas,"other"))
-
-  # do the same, but this time per year
-  lr_seas_max <- unique(fs_lookup$fs_seas) %>%
-    map(
-      \(seas_tmp){
-        rname_temp<- fs_lookup %>%
-          filter(fs_seas==seas_tmp) %>%
-          pull(fs_name)
-        r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
-        r_max <- max(r_fs_tmp)
-        r_max %>%
-          set.names(rname_temp[1])
-        return(r_max)
-      }
-    )
-  r_seas_max <- rast(lr_seas_max)
 
   r_fs_seas_max_crop <- crop(r_seas_max, r_wp)
   ext(r_fs_seas_max_crop) <- ext(r_wp)
@@ -159,30 +175,9 @@ zonal_pop_exposure_method2 <- function(floodscan_path=fp_fs,
   }
 }
 
-floodscan_pixel_values <-  function(floodscan_path,mask){
+floodscan_pixel_values <-  function(floodscan_source,mask){
 
-  tnc_fs <- tidync(floodscan_path)
-  tnc_fs_filt <- fs_filter_bounds(fs_obj = tnc_fs,geometry = mask)
-  r_fs <- fs_to_raster(fs_obj = tnc_fs_filt,band = "SFED_AREA")
-
-  fs_lookup <-  floodscan_lookup(r_fs) %>%
-    filter(!str_detect(fs_seas,"other"))
-
-  # do the same, but this time per year
-  lr_seas_max <- unique(fs_lookup$fs_seas) %>%
-    map(
-      \(seas_tmp){
-        rname_temp<- fs_lookup %>%
-          filter(fs_seas==seas_tmp) %>%
-          pull(fs_name)
-        r_fs_tmp <- r_fs[[names(r_fs) %in% rname_temp]]
-        r_max <- max(r_fs_tmp)
-        r_max %>%
-          set.names(rname_temp[1])
-        return(r_max)
-      }
-    )
-  r_seas_max <- rast(lr_seas_max)
+  r_seas_max <- fs_seasonal_max(floodscan_source, geometry = mask)
   r_seas_max_clipped <- mask(r_seas_max,mask)
 
   r_seas_max_clipped %>%
