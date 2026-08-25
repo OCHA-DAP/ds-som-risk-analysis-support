@@ -43,9 +43,27 @@ list(
     command= file.path(dir_wp,"som_ppp_2020_1km_Aggregated_UNadj.tif" ),
     format = "file"
   ),
+  # FloodScan source --------------------------------------------------------
+  # Previously a static NetCDF snapshot on the shared drive ending 2022-12-31,
+  # which is why the seasonal analysis stopped at OND 2022. We now read the
+  # daily COGs on blob (prod / `raster` / floodscan/daily/v5/processed), which
+  # `ds-floodscan-ingest` keeps current.
+  #
+  # This target is checked on every run so the pipeline picks up new FloodScan
+  # data automatically; downstream targets only rebuild when a new *complete*
+  # MAM or OND season becomes available.
   tar_target(
-    name=fp_fs,
-    command= file.path(
+    name = fs_latest_date,
+    command = fs_blob_latest_date(),
+    cue = tar_cue(mode = "always")
+  ),
+
+  # Legacy shared-drive snapshot. Not used by the pipeline -- kept so the
+  # pre-2023 results can be reproduced by passing `fp_fs_legacy` instead of
+  # `fs_latest_date` to the exposure targets below.
+  tar_target(
+    name = fp_fs_legacy,
+    command = file.path(
       Sys.getenv("AA_DATA_DIR"),
       "private",
       "raw",
@@ -53,9 +71,7 @@ list(
       "floodscan",
       "floodscan_flooded_fraction_africa_19980112-20221231_p00",
       "aer_sfed_area_300s_19980112_20221231_v05r01.nc"
-    ),
-
-    format = "file"
+    )
   ),
 
 
@@ -107,7 +123,7 @@ list(
   tar_target(
     name = df_fs_pixel_values,
     command = floodscan_pixel_values(
-      floodscan_path = fp_fs,
+      floodscan_source = fs_latest_date,
       mask = gdf_adm$adm0
     )
   ),
@@ -117,7 +133,7 @@ list(
   # to eliminate noise
   tar_target(
     name = df_adm2_exposure_historical1,
-    command = zonal_pop_exposure_method1(floodscan_path=fp_fs,
+    command = zonal_pop_exposure_method1(floodscan_source=fs_latest_date,
                                          worldpop_path=fp_wp,
                                          flood_frac_thresh=0.005,
                                          adm = gdf_adm$adm2
@@ -127,7 +143,7 @@ list(
 
   tar_target(
     name = df_adm2_exposure_historical2,
-    command = zonal_pop_exposure_method2(floodscan_path=fp_fs,
+    command = zonal_pop_exposure_method2(floodscan_source=fs_latest_date,
                                          worldpop_path=fp_wp,
                                          flood_frac_thresh=seq(0.02,0.2, by=0.02),
                                          adm = gdf_adm$adm2
