@@ -44,16 +44,6 @@ list(
     format = "file"
   ),
   tar_target(
-    name=fp_ocha_pop,
-    command= file.path(dir_ocha_explore,"2024 Population Disaggregation.xlsx" ),
-    format = "file"
-  ),
-  tar_target(
-    name=fp_ocha_pin,
-    command= file.path(dir_ocha_explore,"Workspace_3A-3B_PIN&Sev_2023-10-24_district level.xlsx"),
-    format = "file"
-  ),
-  tar_target(
     name=fp_fs,
     command= file.path(
       Sys.getenv("AA_DATA_DIR"),
@@ -73,24 +63,6 @@ list(
 
 
   tar_target(
-    name= df_ocha_pin,
-    command = readxl::read_xlsx(
-      path = fp_ocha_pin,
-      sheet = "WS - 3.1 Overall PiN",
-      skip=2
-    ) %>%
-      clean_names()
-  ),
-  tar_target(
-    name= df_ocha_pop,
-    command = readxl::read_xlsx(
-      path = fp_ocha_pop,
-      sheet ="Humanitarian Plannning 2024 pop",
-      skip = 1
-    ) %>%
-      clean_names()
-  ),
-  tar_target(
     name = gdf_adm,
     command = map(
       set_names(c(adm0 = "som_adm0", adm1 = "som_adm1", adm2 = "som_adm2")),
@@ -106,37 +78,21 @@ list(
   # Wrangle OCHA data -------------------------------------------------------
 
 
+  # NOTE: OCHA 2024 population/PIN excel files are bypassed here (readxl is
+  # broken on this machine). pop_24/final_pin are stood in with raw WorldPop
+  # population instead, so downstream targets that reference these column
+  # names keep working unchanged. final_pin is not meaningful (0).
   tar_target(
     name = df_ocha_pin_pop,
-    command = df_ocha_pop %>%
-      select(adm2_en= district,
-             adm2_pcode = district_pcode,
-             pop_24 = revised_population_methodology_2024_unfpa_adoptation) %>%
-      left_join(
-        df_ocha_pin %>%
-          select(adm1_en = admin_1,
-                 adm1_pcode = admin_1_p_code,
-                 adm2_en = admin_2,
-                 adm2_pcode = admin_2_p_code,
-                 final_pin=final_pi_n) %>%
-          filter(!is.na(adm1_en))
-      )
+    command = df_adm2_worldpop_summary %>%
+      rename(pop_24 = pop) %>%
+      mutate(final_pin = NA_real_)
   ),
   tar_target(
     name = df_adm1_ocha_pin_pop,
-    command = df_ocha_pop %>%
-      select(adm2_en= district,
-             adm2_pcode = district_pcode,
-             pop_24 = revised_population_methodology_2024_unfpa_adoptation) %>%
-      left_join(
-        df_ocha_pin %>%
-          select(adm1_en = admin_1,
-                 adm1_pcode = admin_1_p_code,
-                 adm2_en = admin_2,
-                 adm2_pcode = admin_2_p_code,
-                 final_pin=final_pi_n) %>%
-          filter(!is.na(adm1_en))
-      ) %>%
+    command = df_adm2_worldpop_summary %>%
+      rename(pop_24 = pop) %>%
+      mutate(final_pin = NA_real_) %>%
       group_by(across(starts_with("adm1"))) %>%
       summarise(
         across(.cols= c("pop_24","final_pin"),~sum(.x,na.rm=T))
@@ -551,8 +507,7 @@ list(
         columns= c("mam_pct_pop_exposed_24_min",
                    "mam_pop_exposed_24_min",
                    "ond_pct_pop_exposed_24_min",
-                   "ond_pop_exposed_24_min",
-                   "final_pin"
+                   "ond_pop_exposed_24_min"
         ),
         method = "numeric",
         palette = "YlOrRd",
@@ -678,8 +633,7 @@ list(
         columns= c("mam_pct_exposed_min",
                    "mam_pop_exposed_24_min",
                    "ond_pct_exposed_min",
-                   "ond_pop_exposed_24_min",
-                   "final_pin"
+                   "ond_pop_exposed_24_min"
         ),
         method = "numeric",
         palette = "YlOrRd",
