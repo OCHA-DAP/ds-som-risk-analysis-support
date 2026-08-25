@@ -1,0 +1,172 @@
+---
+title: "Tar"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+library(targets)
+library(tidyverse)
+library(gt)
+library(sf)
+
+library(here)
+library(gghdx)
+gghdx()
+```
+
+Pixel Values 
+```{r}
+tar_load(df_fs_pixel_values)
+df_fs_pixel_values %>%
+  filter(!is.na(value)) %>% 
+  filter(value>0.005) %>% 
+  ggplot(aes(x= value))+
+  geom_histogram()+
+  scale_x_continuous(
+    labels= scales::label_percent()
+  )+
+  labs(
+    title = "Distribution of all non-zero flood fraction pixel values (FloodScan)"
+  )+
+  theme(
+    axis.title.x = element_blank()
+  )
+
+```
+
+
+Percentile table
+
+```{r}
+df_adm1_historical_pct %>% 
+  filter(
+    adm1_en =="Banadir" 
+  ) %>% 
+  print(n=nrow(.))
+
+    
+df_adm1_historical_pct2 %>%
+  mutate(
+    seas_label = if_else(month(date)==3,"MAM","OND")
+  ) %>% 
+      ggplot(
+        aes(x= pct_pop_exposed_24,y = reorder(adm1_en,pct_pop_exposed_24))
+      )+
+      geom_boxplot()+
+      scale_x_continuous(
+        labels= scales::comma
+      )+
+  scale_x_continuous(labels=scales::percent)+
+  facet_wrap(~seas_label)+
+  labs(
+    title= "Distribution of population exposed over MAM and OND historically",
+    subtitle = "Somalia - FloodScan (1998-2022) + WorldPop 2020 UN adjusted"
+  )+
+  theme(
+    axis.title = element_blank()
+  )
+    
+df_adm1_historical_pct2 %>%
+  mutate(
+    seas_label = if_else(month(date)==3,"MAM","OND")
+  ) %>% 
+      ggplot(
+        aes(x= pop_exposed_24,y = reorder(adm1_en,pop_exposed_24))
+      )+
+      geom_boxplot()+
+  scale_x_continuous(labels= scales::label_number_si(),
+                     breaks= seq(0, 4e6, 50000)
+                     )+
+  # scale_x_continuous(labels=scales::percent)+
+  facet_wrap(~seas_label)+
+  labs(
+    title= "Distribution of population exposed over MAM and OND historically",
+    subtitle = "Somalia - FloodScan (1998-2022) + WorldPop 2020 UN adjusted"
+  )+
+  theme(
+    axis.title = element_blank(),
+    axis.text.x = element_text(angle = 90)
+  )
+
+```
+
+```{r}
+tar_load(df_adm1_exposure_quantiles)
+
+df_adm1_pctile_long <- df_adm1_exposure_quantiles %>%
+      filter(mo==10 & q %in% c(0.25,0.75)|
+               mo== 3 & q %in% c(0.5,0.95))
+
+  
+df_crossbar <- df_adm1_pctile_long %>% 
+      select(matches("adm"),mo,q,matches("_exposed_")) %>% 
+      group_by(
+        across(matches("adm")),mo
+      ) %>% 
+      mutate(
+        cat = if_else(q==min(q),"low","high"),
+         seas_label = if_else(mo==3,"MAM","OND")
+      ) %>% 
+      select(-q,-mo) %>% 
+      pivot_wider(
+        names_from = cat,
+        values_from=c("pct_pop_exposed_24","pop_exposed_24")
+        ) %>% 
+  ungroup()
+
+df_adm1_historical_pct %>% 
+  
+   mutate(
+    seas_label = if_else(month(date)==3,"MAM","OND")
+  ) %>% 
+  left_join(df_crossbar) %>% 
+  mutate(
+    pct_pop_exposed_24_cat = if_else(
+      pct_pop_exposed_24>=pct_pop_exposed_24_low & pct_pop_exposed_24<=pct_pop_exposed_24_high,"in range","out"
+    )
+  ) %>% 
+  
+  ggplot(aes(x=pct_pop_exposed_24, 
+             y= reorder(adm1_en,pct_pop_exposed_24),
+             
+             # fill=alpha(pct_pop_exposed_24_cat,0.2)
+             ))+
+  geom_jitter(
+    width=0,height =0.4,
+     alpha=0.5,
+    aes(
+      color=pct_pop_exposed_24_cat,
+    )
+  )+
+   geom_segment(data = df_crossbar,
+              aes(y=adm1_en,
+                  yend= adm1_en,
+                  x= pct_pop_exposed_24_low,
+                  xend= pct_pop_exposed_24_high),color="darkgreen"
+              )+
+  facet_wrap(~seas_label)+
+  scale_x_continuous(labels=scales::percent,trans=scales::pseudo_log_trans())+
+  labs(
+    title = "Somalia Historical % Population Exposed to Flooding",
+    subtitle = "Percentile ranges used to set boundaries shown in green (50-95th for MAM & 25-57th for OND)",
+  )+
+  theme(
+    axis.title = element_blank(),
+    legend.position  = "none"
+  )
+
+
+ 
+```
+
+
+
