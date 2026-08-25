@@ -1,0 +1,228 @@
+---
+title: "ECMWF- Rank Admins by 2024 JFM Rainfall"
+output: 
+    bookdown::html_document2:
+        toc: true
+        toc_float: true
+        toc_depth: 3
+        code_folding: hide
+date: "2023-10-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE, 
+  eval = TRUE,
+  results = "hide",
+  out.width= "100%"
+)
+```
+
+## Intro
+
+Objective to predict flood/drought risk for 2024 is very difficult due the following factors:
+- El Nino expected to weaken in 2024 so we have little indication of expected rainfall patterns in 2024 especially during Gu (OND).
+
+- However something which may prove somewhat insightful is to look at most forward looking ECMWF Seasonal forecast available which extends [FMA2024 published October 2023](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202310010000&stats=ensm&valid_time=202402010000) and compare it to the equivalent forecast made 1 year earlier [FMA 2023 published October 2022](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202210010000&stats=tsum&valid_time=202211010000
+)
+- This does not correspond to the Gu rainfall season (MAM), but is the closest we have and contains some overlap.
+- Acknowledge that this comparison does not give a huge amount of informatio, but at least we will be able to say something about how predictions of early 2023 & 2024 compare.
+- The charts above provide this comparison well and we can see FMA2024 has much more precip than FMA2023. To provide a bit more information I will provide a map showing the rank of JFM 2024** rainfall by admin 1 state in Somalia (**note: see next section to understand why not FMA 2024).
+
+```{r libsData}
+library(tidyverse)
+library(ncdf4)
+library(terra)
+library(rhdx)
+library(janitor)
+library(exactextractr)
+library(gghdx)
+gghdx()
+
+fp_seas51 <- file.path(
+  Sys.getenv("AA_DATA_DIR"),
+  "private",
+  "raw",
+  "som",
+  "ecmwf_seasonal",
+  "seas51"
+)
+
+som_adm_levels <- c(
+  "som_admbnda_adm0_ocha_20230308",
+  "som_admbnda_adm1_ocha_20230308",
+  "som_admbnda_adm2_ocha_20230308"
+)
+
+som_adm <- som_adm_levels %>%
+  map(
+    ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
+      pluck(1) %>%
+      get_resource(2) %>%
+      read_resource(layer = .x) %>%
+      clean_names() %>%
+      select(matches("^adm\\d_"))
+  ) %>%
+  set_names(c("adm0", "adm1", "adm2"))
+```
+
+
+## ECMWF Product discrepancy:
+
+- How does ECMWF produce a forecast for FMA 2024 in October 2023? You can see this in the chart [here](https://charts.ecmwf.int/products/seasonal_system5_standard_rain?area=AFRI&base_time=202310010000&stats=ensm&valid_time=202402010000)
+- This does not line up w/ the data downloaded from the API which latest trimester probability published in October 2023 would be JFM 2024 (lt 4-6). This view is supported by the
+  + [C3s Seasonal Chart with ECMWF Data](https://climate.copernicus.eu/charts/packages/c3s_seasonal/products/c3s_seasonal_spatial_ecmf_rain_3m?area=area08&base_time=202310010000&type=tsum&valid_time=202401010000)
+  + Data available on API and also manually available [here](https://cds.climate.copernicus.eu/cdsapp#!/dataset/seasonal-monthly-single-levels?tab=form)
+  
+  
+## Latest available data
+ 
+Therefore, I downloaded the latest available data (Pub Oct 2023) from API and use leadtimes 4-6 to get the most foreward looking forecast. I also do the same w/ manually downloaded data later to make sure it wasn't a problem w/ my API call.
+
+
+```{r}
+# I later manually downloaded the files from the ECMWF website to double check
+# therefore, I have to filter out the manually downloaded files first
+idx_manually_downloaded_fp <- str_detect(dir(fp_seas51),"manual")
+fnames <- dir(fp_seas51)[!idx_manually_downloaded_fp]
+
+
+# list of rasters
+lr <- fnames %>%
+  map(
+    \(fname){
+      fp <- file.path(fp_seas51, fname)
+      nf <- nc_open(fp)
+
+      # get precipitation rate
+      # it's 4D for each value there is 1. lat, 2. lon, 3. ensemble, 4. time)
+      tprate_array <- ncvar_get(nf, "tprate")
+
+      # get fill value
+      fill_value <- ncatt_get(nf, "tprate", "_FillValue")
+
+      # fill array w/ standard NA
+      tprate_array[tprate_array == fill_value$value] <- NA
+      tprate_mean_array <- apply(tprate_array, c(1, 2), mean, na.rm = T)
+
+
+      lon <- ncvar_get(nf, "longitude")
+      lat <- ncvar_get(nf, "latitude", verbose = F)
+      t_hours <- ncvar_get(nf, "time")
+
+      r <- rast(
+        x = aperm(tprate_mean_array, c(2, 1)),
+        extent = ext(
+          min(lon) - .5,
+          max(lon) + .5,
+          min(lat) - .5,
+          max(lat) + 0.5
+        ),
+        crs = "EPSG:4326"
+      )
+      dates_predicted <- as_date(as_date("1900-01-01") + hours(t_hours))
+      set.names(r, dates_predicted)
+      return(r)
+    }
+  ) %>%
+  set_names(fnames)
+
+```
+
+## Sum 3 monthly J,F, M raster for JFM sum rainfall raster
+
+Since the plot I create is just a simple rank plot all I neeed to do is sum the 3 rasters - nothing fancy
+
+```{r}
+r_ecmwf <-  rast(lr)
+r_emwf_sum <- sum(r_ecmwf)
+```
+
+## Zonal stats per admin 1
+
+Run the zonal stats on the sum
+
+```{r}
+ df_ecmwf_adm1 <- exact_extract(
+      x = r_emwf_sum,
+      y = som_adm$adm1,
+      fun = "mean",
+      append_cols= "adm1_en"
+    ) %>%
+      pivot_longer(-adm1_en) %>%
+      separate(name, into = c("stat", "date"), sep = "\\.") %>%
+      pivot_wider(names_from = "stat", values_from = "value") 
+
+
+# rank rainfall
+df_ecmwf_adm1_ranked <- df_ecmwf_adm1 %>% 
+  arrange(desc(mean)) %>% 
+  mutate(
+    rank = row_number()
+  )
+
+# join to shapefile
+gdf_adm1_ranked <- som_adm$adm1 %>% 
+  left_join(df_ecmwf_adm1_ranked, by = c("adm1_en" = "adm1_en")) 
+```
+
+## JFM 2024 Precip Rank Map Plot
+```{r map-ECMWFrankJFM2024, results="asis"}
+# map ranks
+gdf_adm1_ranked %>% 
+  ggplot()+
+  geom_sf(
+    aes(fill=as.ordered(rank))
+  )+
+  theme_void()+
+  theme(
+    legend.title = element_blank()
+  )
+
+```
+
+
+```{r eval=F,checkManuallyDownloaded}
+# Quick check data manually downloaded
+
+# get index of manually downloaded file
+manual_file <- dir(fp_seas51)[idx_manually_downloaded_fp]
+fp_manual_dl <- file.path(fp_seas51,manual_file)
+nf <- nc_open(fp_manual_dl)
+
+# get precipitation rate
+# it's 3D for each value there is 1. lat, 2. lon, 3. ensemble, 4. time)
+tprate_array <- ncvar_get(nf, "tprate")
+
+# get fill value
+fill_value <- ncatt_get(nf, "tprate", "_FillValue")
+
+# fill array w/ standard NA
+tprate_array[tprate_array == fill_value$value] <- NA
+# tprate_mean_array <- apply(tprate_array, c(1, 2), mean, na.rm = T)
+
+lon <- ncvar_get(nf, "longitude")
+lat <- ncvar_get(nf, "latitude", verbose = F)
+t_hours <- ncvar_get(nf, "time")
+
+
+r_dld <- rast(
+  x = aperm(tprate_array,c(2,1,3)),
+  extent = ext(
+    min(lon) - .5,
+    max(lon) + .5,
+    min(lat) - .5,
+    max(lat) + 0.5
+  ),
+  crs = "EPSG:4326"
+)
+
+
+dates_predicted <- as_date(as_datetime("1900-01-01 00:00:00") + hours(t_hours))
+set.names(r_dld, dates_predicted)
+
+# it's the same.
+r_dld      
+```
