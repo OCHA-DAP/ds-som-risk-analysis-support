@@ -37,10 +37,28 @@ dir_wp <-  file.path(
 
 list(
 
-  # Track files -------------------------------------------------------------
+  # Population source -------------------------------------------------------
+  # Was WorldPop 2020 from the shared drive
+  # (`som_ppp_2020_1km_Aggregated_UNadj.tif`). With FloodScan now running to
+  # the present, flood years through 2026 were being multiplied against a 2020
+  # population. We read the current global WorldPop count raster on blob
+  # instead and clip it to Somalia:
+  #
+  #   dev / `raster` / worldpop/pop_count/global_pop_2026_CN_1km_R2025A_UA_v1.tif
+  #
+  # Same 1km grid as before. Masked to adm0 -- the global product is not
+  # clipped to any border and Somalia's bbox takes in heavily populated parts
+  # of eastern Ethiopia and north-eastern Kenya.
   tar_target(
-    name=fp_wp,
-    command= file.path(dir_wp,"som_ppp_2020_1km_Aggregated_UNadj.tif" ),
+    name = fp_wp,
+    command = wp_blob_crop(gdf_adm$adm0, year = 2026),
+    format = "file"
+  ),
+
+  # Previous shared-drive raster, kept for reproducing the earlier results.
+  tar_target(
+    name = fp_wp_legacy,
+    command = file.path(dir_wp, "som_ppp_2020_1km_Aggregated_UNadj.tif"),
     format = "file"
   ),
   # FloodScan source --------------------------------------------------------
@@ -98,6 +116,12 @@ list(
   # broken on this machine). pop_24/final_pin are stood in with raw WorldPop
   # population instead, so downstream targets that reference these column
   # names keep working unchanged. final_pin is not meaningful (0).
+  #
+  # The `_24` suffix throughout the pipeline is now a misnomer: it is whatever
+  # year `fp_wp` points at, currently WorldPop 2026. The 57 column names
+  # carrying that suffix were left alone deliberately -- they are internal, the
+  # user-facing gt labels say "Population Estimates" with no year, and renaming
+  # them would touch 20+ targets for no visible gain.
   tar_target(
     name = df_ocha_pin_pop,
     command = df_adm2_worldpop_summary %>%
