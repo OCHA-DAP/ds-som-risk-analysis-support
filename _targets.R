@@ -93,15 +93,9 @@ list(
   tar_target(
     name = gdf_adm,
     command = map(
-      set_names(c(
-        adm0="som_admbnda_adm0_ocha_20230308",
-        adm1="som_admbnda_adm1_ocha_20230308",
-        adm2="som_admbnda_adm2_ocha_20230308")),
+      set_names(c(adm0 = "som_adm0", adm1 = "som_adm1", adm2 = "som_adm2")),
 
-      ~ search_datasets("Somalia - Subnational Administrative Boundaries") %>%
-        pluck(1) %>%
-        get_resource(2) %>%
-        read_resource(layer = .x) %>%
+      ~ download_fieldmaps_sf(iso3 = "som", layer = .x) %>%
         clean_names() %>%
         select(matches("^adm\\d_"))
     ) %>%
