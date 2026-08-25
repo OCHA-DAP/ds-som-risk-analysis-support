@@ -507,7 +507,7 @@ list(
         )
       ) %>%
       tab_spanner(
-        label = "OND (25-75th percentile)",
+        label = "OND (50-95th percentile)",
         columns = c(
           "ond_pop_exposed_24_min",
           "ond_pct_pop_exposed_24_min"
@@ -632,7 +632,7 @@ list(
         )
       ) %>%
       tab_spanner(
-        label = "OND (25-75th percentile)",
+        label = "OND (50-95th percentile)",
         columns = c(
           "ond_pop_exposed_24_min",
           "ond_pct_exposed_min"
@@ -851,7 +851,7 @@ list(
           # percentile ranges + PiN
           df_adm1_max_range_table %>%
             mutate(
-              ond_pop_25_75 = paste0(
+              ond_pop_50_95 = paste0(
                 formatC(round(ond_pop_exposed_24_min,-2),format="d", big.mark=","),"-",
                 formatC(round(ond_pop_exposed_24_max,-2),format="d", big.mark=",")
               ),
@@ -860,7 +860,7 @@ list(
                 formatC(round(mam_pop_exposed_24_max,-2),format="d", big.mark=",")
               )
             ) %>%
-            select(starts_with("adm"),ond_pop_25_75,mam_pop_50_95,final_pin) %>%
+            select(starts_with("adm"),ond_pop_50_95,mam_pop_50_95,final_pin) %>%
             # pt estimates for shading
             left_join(df_adm1_pt_estimates_map) %>%
             mutate(
