@@ -24,3 +24,6 @@ data/*
 *.gpkg
 *.gpkg-shm
 *.gpkg-wal
+/_targets/meta
+_targets/meta/meta
+/_targets
